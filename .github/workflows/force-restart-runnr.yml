@@ -6,25 +6,29 @@
 # SPDX-License-Identifier: Apache-2.0
 #
 
-name: Lunaris-AOSP 16.2 - Pixel 7 (Self-hosted)
+name: Lunaris-AOSP 16.2 - Pixel 7
 
 on:
   workflow_dispatch:
     inputs:
+
       DEVICE_NAME:
         description: "Device codename"
         required: true
         default: "panther"
+        type: string
 
       PRODUCT_NAME:
         description: "Lunaris lunch target"
         required: true
         default: "lineage_panther-bp4a-user"
+        type: string
 
       BUILD_COMMAND:
         description: "Build command"
         required: true
         default: "m bacon"
+        type: string
 
       CLEAN_BUILD:
         description: "Clean build?"
@@ -36,1335 +40,136 @@ on:
           - "no"
 
       PATCH_LIST:
-        description: "Optional space-separated Gerrit Change-IDs or patch script URLs"
+        description: "Optional patch commands/URLs"
         required: false
         default: ""
+        type: string
+
+
+# Required for artifact/release upload.
+permissions:
+  contents: write
+
+
+# ============================================================
+# START CRAVE SELF-HOSTED RUNNER
+# ============================================================
 
 jobs:
 
-  prepare:
-    name: Prepare Lunaris-AOSP 16.2
-    runs-on: ubuntu-latest
+  start-runner:
 
-    outputs:
-      PROJECTFOLDER: ${{ steps.variables.outputs.PROJECTFOLDER }}
-      PROJECTID: ${{ steps.variables.outputs.PROJECTID }}
-      REPO_INIT: ${{ steps.variables.outputs.REPO_INIT }}
-      LUNCH: ${{ steps.variables.outputs.LUNCH }}
-      LOCAL_MANIFEST: ${{ steps.variables.outputs.LOCAL_MANIFEST }}
+    name: Start Crave Self-Hosted Runner
+
+    runs-on: ubuntu-latest
 
     steps:
 
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Check Crave credentials
-        run: |
-          set -e
-
-          if [[ -z "${{ secrets.CRAVE_USERNAME }}" ]]; then
-            echo "::error::CRAVE_USERNAME is not configured."
-            exit 1
-          fi
-
-          if [[ -z "${{ secrets.CRAVE_TOKEN }}" ]]; then
-            echo "::error::CRAVE_TOKEN is not configured."
-            exit 1
-          fi
-
-          echo "Crave credentials are configured."
-
-      - name: Set build variables
-        id: variables
-        shell: bash
-        run: |
-          set -e
-
-          PROJECTFOLDER="/crave-devspaces/LunarisAOSP16"
-          PROJECTID="35"
-
-          REPO_INIT="repo init -u https://github.com/Lunaris-AOSP/android.git -b 16.2 --git-lfs"
-
-          LUNCH="${{ github.event.inputs.PRODUCT_NAME }}"
-
-          #
-          # Pixel 7:
-          #
-          # Device codename: panther
-          # Device tree path: device/google/pantah
-          # Vendor path:      vendor/google/panther
-          # SoC/kernel:       GS201
-          #
-          LOCAL_MANIFEST='mkdir -p .repo/local_manifests && cat > .repo/local_manifests/pixel7.xml << '\''EOF'\''
-          <?xml version="1.0" encoding="UTF-8"?>
-          <manifest>
-
-            <!-- Pixel 7 device tree.
-                 Repository is named panther, while the actual
-                 device-tree directory is device/google/pantah. -->
-            <project
-              name="LineageOS/android_device_google_panther"
-              path="device/google/pantah"
-              revision="lineage-23.2"
-              clone-depth="1" />
-
-            <!-- Pixel GS201 common device tree -->
-            <project
-              name="LineageOS/android_device_google_gs201"
-              path="device/google/gs201"
-              revision="lineage-23.2"
-              clone-depth="1" />
-
-            <!-- GS201 kernel -->
-            <project
-              name="LineageOS/android_kernel_google_gs201"
-              path="kernel/google/gs201"
-              revision="lineage-23.2"
-              clone-depth="1" />
-
-            <!-- Pixel 7 proprietary blobs -->
-            <project
-              name="TheMuppets/proprietary_vendor_google_panther"
-              path="vendor/google/panther"
-              revision="lineage-23.2"
-              clone-depth="1" />
-
-          </manifest>
-          EOF'
-
-          echo "PROJECTFOLDER=$PROJECTFOLDER" >> "$GITHUB_OUTPUT"
-          echo "PROJECTID=$PROJECTID" >> "$GITHUB_OUTPUT"
-          echo "REPO_INIT=$REPO_INIT" >> "$GITHUB_OUTPUT"
-          echo "LUNCH=$LUNCH" >> "$GITHUB_OUTPUT"
-          echo "LOCAL_MANIFEST=$LOCAL_MANIFEST" >> "$GITHUB_OUTPUT"
-
-          echo "PROJECTFOLDER=$PROJECTFOLDER" >> "$GITHUB_ENV"
-          echo "PROJECTID=$PROJECTID" >> "$GITHUB_ENV"
-          echo "REPO_INIT=$REPO_INIT" >> "$GITHUB_ENV"
-          echo "LUNCH=$LUNCH" >> "$GITHUB_ENV"
-          echo "LOCAL_MANIFEST=$LOCAL_MANIFEST" >> "$GITHUB_ENV"
-
-      - name: Display build parameters
-        run: |
-          echo "======================================"
-          echo " Lunaris-AOSP Pixel 7 Build"
-          echo "======================================"
-          echo "Device:        ${{ github.event.inputs.DEVICE_NAME }}"
-          echo "Product:       ${{ github.event.inputs.PRODUCT_NAME }}"
-          echo "Build command: ${{ github.event.inputs.BUILD_COMMAND }}"
-          echo "Clean build:   ${{ github.event.inputs.CLEAN_BUILD }}"
-          echo "Project:       $PROJECTFOLDER"
-          echo "Crave ID:      $PROJECTID"
-          echo "======================================"
-
-
-  test:
-    name: Test Lunaris Manifest
-    needs: prepare
-    runs-on: ubuntu-latest
-    timeout-minutes: 30
-
-    steps:
-
-      - name: Install dependencies
+      - name: Install tmux
         run: |
           sudo apt-get update
-          sudo apt-get install -y git curl ca-certificates
+          sudo apt-get install -y tmux
 
-      - name: Configure repo
-        shell: bash
+      - name: Check Crave credentials
+        env:
+          CRAVE_USERNAME: ${{ secrets.CRAVE_USERNAME }}
+          CRAVE_TOKEN: ${{ secrets.CRAVE_TOKEN }}
+        run: |
+          set -e
+
+          if [[ -z "$CRAVE_USERNAME" ]]; then
+            echo "::error::CRAVE_USERNAME is missing."
+            exit 1
+          fi
+
+          if [[ -z "$CRAVE_TOKEN" ]]; then
+            echo "::error::CRAVE_TOKEN is missing."
+            exit 1
+          fi
+
+          echo "Crave credentials detected."
+
+      - name: Install Crave client
         run: |
           set -e
 
           mkdir -p "$HOME/bin"
 
-          curl -L \
-            https://storage.googleapis.com/git-repo-downloads/repo \
-            -o "$HOME/bin/repo"
+          if command -v crave >/dev/null 2>&1; then
+            echo "Crave is already installed."
+            exit 0
+          fi
 
-          chmod +x "$HOME/bin/repo"
+          curl -fsSL \
+            https://raw.githubusercontent.com/accupara/crave/master/get_crave.sh \
+            | bash -s --
+
+          mv ./crave "$HOME/bin/crave"
+          chmod +x "$HOME/bin/crave"
 
           echo "$HOME/bin" >> "$GITHUB_PATH"
 
-          "$HOME/bin/repo" --version
-
-      - name: Configure git
-        run: |
-          git config --global user.name "${{ github.actor }}"
-          git config --global user.email \
-            "${{ github.actor_id }}+${{ github.actor }}@users.noreply.github.com"
-
-      - name: Test Lunaris repo initialization
-        shell: bash
-        env:
-          REPO_INIT: ${{ needs.prepare.outputs.REPO_INIT }}
-          LOCAL_MANIFEST: ${{ needs.prepare.outputs.LOCAL_MANIFEST }}
-        run: |
-          set -e
-
-          rm -rf tester
-          mkdir tester
-          cd tester
-
-          echo "Initializing Lunaris-AOSP..."
-          eval "$REPO_INIT"
-
-          echo "Installing Pixel 7 local manifest..."
-          eval "$LOCAL_MANIFEST"
-
-          echo
-          echo "======================================"
-          echo "Local manifest:"
-          echo "======================================"
-
-          cat .repo/local_manifests/pixel7.xml
-
-          echo
-          echo "======================================"
-          echo "Testing manifest projects..."
-          echo "======================================"
-
-          repo manifest -r > /tmp/lunaris-manifest.xml
-
-          grep -E \
-            'android_device_google_panther|android_device_google_gs201|android_kernel_google_gs201|proprietary_vendor_google_panther' \
-            .repo/manifests/default.xml \
-            .repo/local_manifests/pixel7.xml || true
-
-          echo
-          echo "Manifest initialization succeeded."
-
-      - name: Verify Pixel 7 repositories
-        shell: bash
-        env:
-          LOCAL_MANIFEST: ${{ needs.prepare.outputs.LOCAL_MANIFEST }}
-        run: |
-          set -e
-
-          cd tester
-
-          eval "$LOCAL_MANIFEST"
-
-          echo "Checking device tree repository..."
-          git ls-remote \
-            https://github.com/LineageOS/android_device_google_panther.git \
-            refs/heads/lineage-23.2
-
-          echo "Checking GS201 device repository..."
-          git ls-remote \
-            https://github.com/LineageOS/android_device_google_gs201.git \
-            refs/heads/lineage-23.2
-
-          echo "Checking GS201 kernel repository..."
-          git ls-remote \
-            https://github.com/LineageOS/android_kernel_google_gs201.git \
-            refs/heads/lineage-23.2
-
-          echo "Checking Pixel 7 vendor repository..."
-          git ls-remote \
-            https://github.com/TheMuppets/proprietary_vendor_google_panther.git \
-            refs/heads/lineage-23.2
-
-          echo
-          echo "All Pixel 7 repositories are reachable."
-
-
-  build:
-    name: Build Lunaris-AOSP 16.2 - Pixel 7
-    needs:
-      - prepare
-      - test
-
-    runs-on: self-hosted
-
-    timeout-minutes: 1440
-
-    concurrency:
-      group: lunaris-pixel7-${{ github.repository }}
-      cancel-in-progress: false
-
-    steps:
-
-      - name: Check self-hosted runner
-        shell: bash
-        run: |
-          set -e
-
-          echo "Runner: $(hostname)"
-          echo "User:   $(whoami)"
-          echo "Arch:   $(uname -m)"
-          echo "OS:"
-          uname -a
-
-          echo
-          echo "Checking required commands..."
-
-          command -v git
-          command -v curl
-          command -v jq
-
-      - name: Configure git
-        shell: bash
-        run: |
-          git config --global user.name "${{ github.actor }}"
-          git config --global user.email \
-            "${{ github.actor_id }}+${{ github.actor }}@users.noreply.github.com"
-
-      - name: Install/configure Crave
-        shell: bash
+      - name: Start runner inside Crave
         env:
           CRAVE_USERNAME: ${{ secrets.CRAVE_USERNAME }}
           CRAVE_TOKEN: ${{ secrets.CRAVE_TOKEN }}
+          CRAVE_FLAGS: ${{ secrets.CRAVE_FLAGS }}
         run: |
           set -e
 
-          echo "DCDEVSPACE=${DCDEVSPACE:-0}"
+          echo "Starting Crave devspace..."
 
-          if command -v crave >/dev/null 2>&1; then
-            echo "Crave already installed:"
-            crave --version || true
+          if [[ -n "$CRAVE_FLAGS" ]]; then
+            crave $CRAVE_FLAGS devspace -- "
           else
-            echo "Installing Crave..."
-
-            mkdir -p "$HOME/bin"
-
-            curl -s \
-              https://raw.githubusercontent.com/accupara/crave/master/get_crave.sh \
-              | bash -s --
-
-            mv crave "$HOME/bin/crave"
-            chmod +x "$HOME/bin/crave"
-
-            sudo ln -sf "$HOME/bin/crave" /usr/bin/crave
+            crave devspace -- "
           fi
 
-          crave --version || true
-
-      - name: Create Crave workspace
-        shell: bash
-        env:
-          PROJECTFOLDER: ${{ needs.prepare.outputs.PROJECTFOLDER }}
-          PROJECTID: ${{ needs.prepare.outputs.PROJECTID }}
-        run: |
-          set -e
-
-          echo "Project folder: $PROJECTFOLDER"
-          echo "Project ID:     $PROJECTID"
-
-          if [[ "$DCDEVSPACE" == *1* ]]; then
-            echo "Already inside Crave devspace."
-
-            if [[ ! -d "$PROJECTFOLDER" ]]; then
-              echo "Creating Crave clone..."
-              crave clone create \
-                --projectID "$PROJECTID" \
-                "$PROJECTFOLDER"
-            fi
-          else
-            echo "Running on normal self-hosted runner."
-
-            sudo mkdir -p /crave-devspaces
-            sudo chmod 777 /crave-devspaces
-
-            mkdir -p "$HOME/crave-devspaces"
-
-            if [[ ! -e /crave-devspaces/LunarisAOSP16 ]]; then
-              sudo ln -s \
-                "$HOME/crave-devspaces/LunarisAOSP16" \
-                /crave-devspaces/LunarisAOSP16
-            fi
-
-            mkdir -p "$PROJECTFOLDER"
-          fi
-
-      - name: Checkout workflow repository
-        uses: actions/checkout@v4
-
-      - name: Configure Crave manifest
-        shell: bash
-        env:
-          PROJECTFOLDER: ${{ needs.prepare.outputs.PROJECTFOLDER }}
-        run: |
-          set -e
-
-          mkdir -p "$PROJECTFOLDER/.repo/manifests"
-
-          if [[ -f configs/crave/crave.yaml.aosp ]]; then
-            cp \
-              configs/crave/crave.yaml.aosp \
-              "$PROJECTFOLDER/.repo/manifests/crave.yaml"
-
-            echo "Using configs/crave/crave.yaml.aosp"
-          else
-            echo "No crave.yaml.aosp found."
-            echo "Continuing with existing Crave configuration."
-          fi
-
-      - name: Initialize Lunaris-AOSP
-        shell: bash
-        env:
-          PROJECTFOLDER: ${{ needs.prepare.outputs.PROJECTFOLDER }}
-          REPO_INIT: ${{ needs.prepare.outputs.REPO_INIT }}
-        run: |
-          set -e
-
-          cd "$PROJECTFOLDER"
-
-          if [[ -d ".repo" ]] && [[ -f ".repo/manifests/default.xml" ]]; then
-            echo "Existing repo checkout detected."
-            echo "Refreshing manifest..."
-
-            repo init \
-              -u https://github.com/Lunaris-AOSP/android.git \
-              -b 16.2 \
-              --git-lfs
-          else
-            echo "Initializing Lunaris-AOSP 16.2..."
-
-            eval "$REPO_INIT"
-          fi
-
-      - name: Install Pixel 7 manifest
-        shell: bash
-        env:
-          PROJECTFOLDER: ${{ needs.prepare.outputs.PROJECTFOLDER }}
-          LOCAL_MANIFEST: ${{ needs.prepare.outputs.LOCAL_MANIFEST }}
-        run: |
-          set -e
-
-          cd "$PROJECTFOLDER"
-
-          eval "$LOCAL_MANIFEST"
-
-          echo
-          echo "Pixel 7 manifest installed:"
-          cat .repo/local_manifests/pixel7.xml
-
-      - name: Start Lunaris build
-        shell: bash
-        env:
-          PROJECTFOLDER: ${{ needs.prepare.outputs.PROJECTFOLDER }}
-          LUNCH: ${{ needs.prepare.outputs.LUNCH }}
-          BUILD_COMMAND: ${{ github.event.inputs.BUILD_COMMAND }}
-          PATCH_LIST: ${{ github.event.inputs.PATCH_LIST }}
-          DEVICE_NAME: ${{ github.event.inputs.DEVICE_NAME }}
-        run: |
-          set -e
-
-          cd "$PROJECTFOLDER"
-
-          if [[ "${{ github.event.inputs.CLEAN_BUILD }}" == "yes" ]]; then
-            CLEAN="--clean"
-          else
-            CLEAN=""
-          fi
-
-          if [[ -n "${{ secrets.PAID }}" ]]; then
-            echo "Using paid Crave platform."
-            PAID="--platform aosp-silver"
-          else
-            PAID=""
-          fi
-
-          echo
-          echo "======================================"
-          echo "Lunaris-AOSP 16.2"
-          echo "Pixel 7 / Panther"
-          echo "======================================"
-          echo "Lunch:  $LUNCH"
-          echo "Build:  $BUILD_COMMAND"
-          echo "Clean:  $CLEAN"
-          echo "======================================"
-          echo
-
-          crave ${{ secrets.CRAVE_FLAGS }} run \
-            --no-patch \
-            $PAID \
-            $CLEAN \
-            -- \
-            "set -e
-
-            echo '======================================'
-            echo 'Lunaris-AOSP Pixel 7 build environment'
-            echo '======================================'
-
-            echo 'Removing stale local manifests...'
-            rm -rf .repo/local_manifests
-
-            echo 'Installing Pixel 7 manifest...'
-            mkdir -p .repo/local_manifests
-
-            cat > .repo/local_manifests/pixel7.xml << 'EOF'
-            <?xml version=\"1.0\" encoding=\"UTF-8\"?>
-            <manifest>
-
-              <project
-                name=\"LineageOS/android_device_google_panther\"
-                path=\"device/google/pantah\"
-                revision=\"lineage-23.2\"
-                clone-depth=\"1\" />
-
-              <project
-                name=\"LineageOS/android_device_google_gs201\"
-                path=\"device/google/gs201\"
-                revision=\"lineage-23.2\"
-                clone-depth=\"1\" />
-
-              <project
-                name=\"LineageOS/android_kernel_google_gs201\"
-                path=\"kernel/google/gs201\"
-                revision=\"lineage-23.2\"
-                clone-depth=\"1\" />
-
-              <project
-                name=\"TheMuppets/proprietary_vendor_google_panther\"
-                path=\"vendor/google/panther\"
-                revision=\"lineage-23.2\"
-                clone-depth=\"1\" />
-
-            </manifest>
-            EOF
-
-            echo 'Syncing source...'
-
-            if [ -f /usr/bin/resync ]; then
-              /usr/bin/resync
-            elif [ -f /opt/crave/resync.sh ]; then
-              /opt/crave/resync.sh
-            else
-              repo sync \
-                -c \
-                -j\$(nproc --all) \
-                --force-sync \
-                --no-clone-bundle \
-                --no-tags
-            fi
-
-            export BUILD_USERNAME='${{ github.actor }}'
-            export BUILD_HOSTNAME='crave'
-
-            echo 'Setting up Android build environment...'
-
-            source build/envsetup.sh
-
-            echo
-            echo 'Available matching Panther targets:'
-            lunch ${LUNCH}
-
-            echo
-            echo 'Running installclean...'
-            make installclean
-
-            echo
-            echo 'Starting ROM compilation...'
-            ${BUILD_COMMAND}
-            "
-
-      - name: Locate build artifacts
-        if: success()
-        shell: bash
-        env:
-          PROJECTFOLDER: ${{ needs.prepare.outputs.PROJECTFOLDER }}
-        run: |
-          set -e
-
-          cd "$PROJECTFOLDER"
-
-          echo
-          echo "======================================"
-          echo "Build artifacts"
-          echo "======================================"
-
-          find out/target/product/panther \
-            -maxdepth 2 \
-            -type f \
-            \( \
-              -name "*.zip" -o \
-              -name "*.img" -o \
-              -name "*.apk" \
-            \) \
-            -print 2>/dev/null || true
-
-      - name: Telegram success notification
-        if: success()
-        continue-on-error: true
-        env:
-          TELEGRAM_TO: ${{ secrets.TELEGRAM_TO }}
-          TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
-        run: |
-          if [[ -z "$TELEGRAM_TO" || -z "$TELEGRAM_TOKEN" ]]; then
-            echo "Telegram secrets not configured; skipping."
-            exit 0
-          fi
-
-          MESSAGE="Lunaris-AOSP 16.2 Pixel 7 build succeeded.
-
-          Device: panther
-          Product: ${{ github.event.inputs.PRODUCT_NAME }}
-          Run: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}"
-
-          curl -sS \
-            -X POST \
-            "https://api.telegram.org/bot${TELEGRAM_TOKEN}/sendMessage" \
-            -d "chat_id=${TELEGRAM_TO}" \
-            --data-urlencode "text=${MESSAGE}" \
-            -d "parse_mode=Markdown"
-
-      - name: Telegram failure notification
-        if: failure()
-        continue-on-error: true
-        env:
-          TELEGRAM_TO: ${{ secrets.TELEGRAM_TO }}
-          TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
-        run: |
-          if [[ -z "$TELEGRAM_TO" || -z "$TELEGRAM_TOKEN" ]]; then
-            echo "Telegram secrets not configured; skipping."
-            exit 0
-          fi
-
-          MESSAGE="Lunaris-AOSP 16.2 Pixel 7 build FAILED.
-
-          Device: panther
-          Product: ${{ github.event.inputs.PRODUCT_NAME }}
-          Run: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}"
-
-          curl -sS \
-            -X POST \
-            "https://api.telegram.org/bot${TELEGRAM_TOKEN}/sendMessage" \
-            -d "chat_id=${TELEGRAM_TO}" \
-            --data-urlencode "text=${MESSAGE}" \
-            -d "parse_mode=Markdown"
-
-      - name: Stop Crave jobs on cancellation
-        if: cancelled()
-        continue-on-error: true
-        env:
-          PROJECTFOLDER: ${{ needs.prepare.outputs.PROJECTFOLDER }}
-        run: |
-          cd "$PROJECTFOLDER" || exit 0
-          crave stop --all || true
-
-      PATCH_LIST:
-        description: "Optional space-separated Gerrit Change-IDs or patch script URLs"
-        required: false
-        default: ""
-
-jobs:
-
-  prepare:
-    name: Prepare Lunaris-AOSP 16.2
-    runs-on: ubuntu-latest
-
-    outputs:
-      PROJECTFOLDER: ${{ steps.variables.outputs.PROJECTFOLDER }}
-      PROJECTID: ${{ steps.variables.outputs.PROJECTID }}
-      REPO_INIT: ${{ steps.variables.outputs.REPO_INIT }}
-      LUNCH: ${{ steps.variables.outputs.LUNCH }}
-      LOCAL_MANIFEST: ${{ steps.variables.outputs.LOCAL_MANIFEST }}
-
-    steps:
-
-      - name: Checkout repository
-        uses: actions/checkout@v4
-
-      - name: Check Crave credentials
-        run: |
-          set -e
-
-          if [[ -z "${{ secrets.CRAVE_USERNAME }}" ]]; then
-            echo "::error::CRAVE_USERNAME is not configured."
-            exit 1
-          fi
-
-          if [[ -z "${{ secrets.CRAVE_TOKEN }}" ]]; then
-            echo "::error::CRAVE_TOKEN is not configured."
-            exit 1
-          fi
-
-          echo "Crave credentials are configured."
-
-      - name: Set build variables
-        id: variables
-        shell: bash
-        run: |
-          set -e
-
-          PROJECTFOLDER="/crave-devspaces/LunarisAOSP16"
-          PROJECTID="35"
-
-          REPO_INIT="repo init -u https://github.com/Lunaris-AOSP/android.git -b 16.2 --git-lfs"
-
-          LUNCH="${{ github.event.inputs.PRODUCT_NAME }}"
-
-          #
-          # Pixel 7:
-          #
-          # Device codename: panther
-          # Device tree path: device/google/pantah
-          # Vendor path:      vendor/google/panther
-          # SoC/kernel:       GS201
-          #
-          LOCAL_MANIFEST='mkdir -p .repo/local_manifests && cat > .repo/local_manifests/pixel7.xml << '\''EOF'\''
-          <?xml version="1.0" encoding="UTF-8"?>
-          <manifest>
-
-            <!-- Pixel 7 device tree.
-                 Repository is named panther, while the actual
-                 device-tree directory is device/google/pantah. -->
-            <project
-              name="LineageOS/android_device_google_panther"
-              path="device/google/pantah"
-              revision="lineage-23.2"
-              clone-depth="1" />
-
-            <!-- Pixel GS201 common device tree -->
-            <project
-              name="LineageOS/android_device_google_gs201"
-              path="device/google/gs201"
-              revision="lineage-23.2"
-              clone-depth="1" />
-
-            <!-- GS201 kernel -->
-            <project
-              name="LineageOS/android_kernel_google_gs201"
-              path="kernel/google/gs201"
-              revision="lineage-23.2"
-              clone-depth="1" />
-
-            <!-- Pixel 7 proprietary blobs -->
-            <project
-              name="TheMuppets/proprietary_vendor_google_panther"
-              path="vendor/google/panther"
-              revision="lineage-23.2"
-              clone-depth="1" />
-
-          </manifest>
-          EOF'
-
-          echo "PROJECTFOLDER=$PROJECTFOLDER" >> "$GITHUB_OUTPUT"
-          echo "PROJECTID=$PROJECTID" >> "$GITHUB_OUTPUT"
-          echo "REPO_INIT=$REPO_INIT" >> "$GITHUB_OUTPUT"
-          echo "LUNCH=$LUNCH" >> "$GITHUB_OUTPUT"
-          echo "LOCAL_MANIFEST=$LOCAL_MANIFEST" >> "$GITHUB_OUTPUT"
-
-          echo "PROJECTFOLDER=$PROJECTFOLDER" >> "$GITHUB_ENV"
-          echo "PROJECTID=$PROJECTID" >> "$GITHUB_ENV"
-          echo "REPO_INIT=$REPO_INIT" >> "$GITHUB_ENV"
-          echo "LUNCH=$LUNCH" >> "$GITHUB_ENV"
-          echo "LOCAL_MANIFEST=$LOCAL_MANIFEST" >> "$GITHUB_ENV"
-
-      - name: Display build parameters
-        run: |
-          echo "======================================"
-          echo " Lunaris-AOSP Pixel 7 Build"
-          echo "======================================"
-          echo "Device:        ${{ github.event.inputs.DEVICE_NAME }}"
-          echo "Product:       ${{ github.event.inputs.PRODUCT_NAME }}"
-          echo "Build command: ${{ github.event.inputs.BUILD_COMMAND }}"
-          echo "Clean build:   ${{ github.event.inputs.CLEAN_BUILD }}"
-          echo "Project:       $PROJECTFOLDER"
-          echo "Crave ID:      $PROJECTID"
-          echo "======================================"
-
-
-  test:
-    name: Test Lunaris Manifest
-    needs: prepare
-    runs-on: ubuntu-latest
-    timeout-minutes: 30
-
-    steps:
-
-      - name: Install dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y git curl ca-certificates
-
-      - name: Configure repo
-        shell: bash
-        run: |
-          set -e
-
-          mkdir -p "$HOME/bin"
-
-          curl -L \
-            https://storage.googleapis.com/git-repo-downloads/repo \
-            -o "$HOME/bin/repo"
-
-          chmod +x "$HOME/bin/repo"
-
-          echo "$HOME/bin" >> "$GITHUB_PATH"
-
-          "$HOME/bin/repo" --version
-
-      - name: Configure git
-        run: |
-          git config --global user.name "${{ github.actor }}"
-          git config --global user.email \
-            "${{ github.actor_id }}+${{ github.actor }}@users.noreply.github.com"
-
-      - name: Test Lunaris repo initialization
-        shell: bash
-        env:
-          REPO_INIT: ${{ needs.prepare.outputs.REPO_INIT }}
-          LOCAL_MANIFEST: ${{ needs.prepare.outputs.LOCAL_MANIFEST }}
-        run: |
-          set -e
-
-          rm -rf tester
-          mkdir tester
-          cd tester
-
-          echo "Initializing Lunaris-AOSP..."
-          eval "$REPO_INIT"
-
-          echo "Installing Pixel 7 local manifest..."
-          eval "$LOCAL_MANIFEST"
-
-          echo
-          echo "======================================"
-          echo "Local manifest:"
-          echo "======================================"
-
-          cat .repo/local_manifests/pixel7.xml
-
-          echo
-          echo "======================================"
-          echo "Testing manifest projects..."
-          echo "======================================"
-
-          repo manifest -r > /tmp/lunaris-manifest.xml
-
-          grep -E \
-            'android_device_google_panther|android_device_google_gs201|android_kernel_google_gs201|proprietary_vendor_google_panther' \
-            .repo/manifests/default.xml \
-            .repo/local_manifests/pixel7.xml || true
-
-          echo
-          echo "Manifest initialization succeeded."
-
-      - name: Verify Pixel 7 repositories
-        shell: bash
-        env:
-          LOCAL_MANIFEST: ${{ needs.prepare.outputs.LOCAL_MANIFEST }}
-        run: |
-          set -e
-
-          cd tester
-
-          eval "$LOCAL_MANIFEST"
-
-          echo "Checking device tree repository..."
-          git ls-remote \
-            https://github.com/LineageOS/android_device_google_panther.git \
-            refs/heads/lineage-23.2
-
-          echo "Checking GS201 device repository..."
-          git ls-remote \
-            https://github.com/LineageOS/android_device_google_gs201.git \
-            refs/heads/lineage-23.2
-
-          echo "Checking GS201 kernel repository..."
-          git ls-remote \
-            https://github.com/LineageOS/android_kernel_google_gs201.git \
-            refs/heads/lineage-23.2
-
-          echo "Checking Pixel 7 vendor repository..."
-          git ls-remote \
-            https://github.com/TheMuppets/proprietary_vendor_google_panther.git \
-            refs/heads/lineage-23.2
-
-          echo
-          echo "All Pixel 7 repositories are reachable."
-
-
-  build:
-    name: Build Lunaris-AOSP 16.2 - Pixel 7
-    needs:
-      - prepare
-      - test
-
-    runs-on: self-hosted
-
-    timeout-minutes: 1440
-
-    concurrency:
-      group: lunaris-pixel7-${{ github.repository }}
-      cancel-in-progress: false
-
-    steps:
-
-      - name: Check self-hosted runner
-        shell: bash
-        run: |
-          set -e
-
-          echo "Runner: $(hostname)"
-          echo "User:   $(whoami)"
-          echo "Arch:   $(uname -m)"
-          echo "OS:"
-          uname -a
-
-          echo
-          echo "Checking required commands..."
-
-          command -v git
-          command -v curl
-          command -v jq
-
-      - name: Configure git
-        shell: bash
-        run: |
-          git config --global user.name "${{ github.actor }}"
-          git config --global user.email \
-            "${{ github.actor_id }}+${{ github.actor }}@users.noreply.github.com"
-
-      - name: Install/configure Crave
-        shell: bash
-        env:
-          CRAVE_USERNAME: ${{ secrets.CRAVE_USERNAME }}
-          CRAVE_TOKEN: ${{ secrets.CRAVE_TOKEN }}
-        run: |
-          set -e
-
-          echo "DCDEVSPACE=${DCDEVSPACE:-0}"
-
-          if command -v crave >/dev/null 2>&1; then
-            echo "Crave already installed:"
-            crave --version || true
-          else
-            echo "Installing Crave..."
-
-            mkdir -p "$HOME/bin"
-
-            curl -s \
-              https://raw.githubusercontent.com/accupara/crave/master/get_crave.sh \
-              | bash -s --
-
-            mv crave "$HOME/bin/crave"
-            chmod +x "$HOME/bin/crave"
-
-            sudo ln -sf "$HOME/bin/crave" /usr/bin/crave
-          fi
-
-          crave --version || true
-
-      - name: Create Crave workspace
-        shell: bash
-        env:
-          PROJECTFOLDER: ${{ needs.prepare.outputs.PROJECTFOLDER }}
-          PROJECTID: ${{ needs.prepare.outputs.PROJECTID }}
-        run: |
-          set -e
-
-          echo "Project folder: $PROJECTFOLDER"
-          echo "Project ID:     $PROJECTID"
-
-          if [[ "$DCDEVSPACE" == *1* ]]; then
-            echo "Already inside Crave devspace."
-
-            if [[ ! -d "$PROJECTFOLDER" ]]; then
-              echo "Creating Crave clone..."
-              crave clone create \
-                --projectID "$PROJECTID" \
-                "$PROJECTFOLDER"
-            fi
-          else
-            echo "Running on normal self-hosted runner."
-
-            sudo mkdir -p /crave-devspaces
-            sudo chmod 777 /crave-devspaces
-
-            mkdir -p "$HOME/crave-devspaces"
-
-            if [[ ! -e /crave-devspaces/LunarisAOSP16 ]]; then
-              sudo ln -s \
-                "$HOME/crave-devspaces/LunarisAOSP16" \
-                /crave-devspaces/LunarisAOSP16
-            fi
-
-            mkdir -p "$PROJECTFOLDER"
-          fi
-
-      - name: Checkout workflow repository
-        uses: actions/checkout@v4
-
-      - name: Configure Crave manifest
-        shell: bash
-        env:
-          PROJECTFOLDER: ${{ needs.prepare.outputs.PROJECTFOLDER }}
-        run: |
-          set -e
-
-          mkdir -p "$PROJECTFOLDER/.repo/manifests"
-
-          if [[ -f configs/crave/crave.yaml.aosp ]]; then
-            cp \
-              configs/crave/crave.yaml.aosp \
-              "$PROJECTFOLDER/.repo/manifests/crave.yaml"
-
-            echo "Using configs/crave/crave.yaml.aosp"
-          else
-            echo "No crave.yaml.aosp found."
-            echo "Continuing with existing Crave configuration."
-          fi
-
-      - name: Initialize Lunaris-AOSP
-        shell: bash
-        env:
-          PROJECTFOLDER: ${{ needs.prepare.outputs.PROJECTFOLDER }}
-          REPO_INIT: ${{ needs.prepare.outputs.REPO_INIT }}
-        run: |
-          set -e
-
-          cd "$PROJECTFOLDER"
-
-          if [[ -d ".repo" ]] && [[ -f ".repo/manifests/default.xml" ]]; then
-            echo "Existing repo checkout detected."
-            echo "Refreshing manifest..."
-
-            repo init \
-              -u https://github.com/Lunaris-AOSP/android.git \
-              -b 16.2 \
-              --git-lfs
-          else
-            echo "Initializing Lunaris-AOSP 16.2..."
-
-            eval "$REPO_INIT"
-          fi
-
-      - name: Install Pixel 7 manifest
-        shell: bash
-        env:
-          PROJECTFOLDER: ${{ needs.prepare.outputs.PROJECTFOLDER }}
-          LOCAL_MANIFEST: ${{ needs.prepare.outputs.LOCAL_MANIFEST }}
-        run: |
-          set -e
-
-          cd "$PROJECTFOLDER"
-
-          eval "$LOCAL_MANIFEST"
-
-          echo
-          echo "Pixel 7 manifest installed:"
-          cat .repo/local_manifests/pixel7.xml
-
-      - name: Start Lunaris build
-        shell: bash
-        env:
-          PROJECTFOLDER: ${{ needs.prepare.outputs.PROJECTFOLDER }}
-          LUNCH: ${{ needs.prepare.outputs.LUNCH }}
-          BUILD_COMMAND: ${{ github.event.inputs.BUILD_COMMAND }}
-          PATCH_LIST: ${{ github.event.inputs.PATCH_LIST }}
-          DEVICE_NAME: ${{ github.event.inputs.DEVICE_NAME }}
-        run: |
-          set -e
-
-          cd "$PROJECTFOLDER"
-
-          if [[ "${{ github.event.inputs.CLEAN_BUILD }}" == "yes" ]]; then
-            CLEAN="--clean"
-          else
-            CLEAN=""
-          fi
-
-          if [[ -n "${{ secrets.PAID }}" ]]; then
-            echo "Using paid Crave platform."
-            PAID="--platform aosp-silver"
-          else
-            PAID=""
-          fi
-
-          echo
-          echo "======================================"
-          echo "Lunaris-AOSP 16.2"
-          echo "Pixel 7 / Panther"
-          echo "======================================"
-          echo "Lunch:  $LUNCH"
-          echo "Build:  $BUILD_COMMAND"
-          echo "Clean:  $CLEAN"
-          echo "======================================"
-          echo
-
-          crave ${{ secrets.CRAVE_FLAGS }} run \
-            --no-patch \
-            $PAID \
-            $CLEAN \
-            -- \
-            "set -e
-
-            echo '======================================'
-            echo 'Lunaris-AOSP Pixel 7 build environment'
-            echo '======================================'
-
-            echo 'Removing stale local manifests...'
-            rm -rf .repo/local_manifests
-
-            echo 'Installing Pixel 7 manifest...'
-            mkdir -p .repo/local_manifests
-
-            cat > .repo/local_manifests/pixel7.xml << 'EOF'
-            <?xml version=\"1.0\" encoding=\"UTF-8\"?>
-            <manifest>
-
-              <project
-                name=\"LineageOS/android_device_google_panther\"
-                path=\"device/google/pantah\"
-                revision=\"lineage-23.2\"
-                clone-depth=\"1\" />
-
-              <project
-                name=\"LineageOS/android_device_google_gs201\"
-                path=\"device/google/gs201\"
-                revision=\"lineage-23.2\"
-                clone-depth=\"1\" />
-
-              <project
-                name=\"LineageOS/android_kernel_google_gs201\"
-                path=\"kernel/google/gs201\"
-                revision=\"lineage-23.2\"
-                clone-depth=\"1\" />
-
-              <project
-                name=\"TheMuppets/proprietary_vendor_google_panther\"
-                path=\"vendor/google/panther\"
-                revision=\"lineage-23.2\"
-                clone-depth=\"1\" />
-
-            </manifest>
-            EOF
-
-            echo 'Syncing source...'
-
-            if [ -f /usr/bin/resync ]; then
-              /usr/bin/resync
-            elif [ -f /opt/crave/resync.sh ]; then
-              /opt/crave/resync.sh
-            else
-              repo sync \
-                -c \
-                -j\$(nproc --all) \
-                --force-sync \
-                --no-clone-bundle \
-                --no-tags
-            fi
-
-            export BUILD_USERNAME='${{ github.actor }}'
-            export BUILD_HOSTNAME='crave'
-
-            echo 'Setting up Android build environment...'
-
-            source build/envsetup.sh
-
-            echo
-            echo 'Available matching Panther targets:'
-            lunch ${LUNCH}
-
-            echo
-            echo 'Running installclean...'
-            make installclean
-
-            echo
-            echo 'Starting ROM compilation...'
-            ${BUILD_COMMAND}
-            "
-
-      - name: Locate build artifacts
-        if: success()
-        shell: bash
-        env:
-          PROJECTFOLDER: ${{ needs.prepare.outputs.PROJECTFOLDER }}
-        run: |
-          set -e
-
-          cd "$PROJECTFOLDER"
-
-          echo
-          echo "======================================"
-          echo "Build artifacts"
-          echo "======================================"
-
-          find out/target/product/panther \
-            -maxdepth 2 \
-            -type f \
-            \( \
-              -name "*.zip" -o \
-              -name "*.img" -o \
-              -name "*.apk" \
-            \) \
-            -print 2>/dev/null || true
-
-      - name: Telegram success notification
-        if: success()
-        continue-on-error: true
-        env:
-          TELEGRAM_TO: ${{ secrets.TELEGRAM_TO }}
-          TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
-        run: |
-          if [[ -z "$TELEGRAM_TO" || -z "$TELEGRAM_TOKEN" ]]; then
-            echo "Telegram secrets not configured; skipping."
-            exit 0
-          fi
-
-          MESSAGE="Lunaris-AOSP 16.2 Pixel 7 build succeeded.
-
-          Device: panther
-          Product: ${{ github.event.inputs.PRODUCT_NAME }}
-          Run: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}"
-
-          curl -sS \
-            -X POST \
-            "https://api.telegram.org/bot${TELEGRAM_TOKEN}/sendMessage" \
-            -d "chat_id=${TELEGRAM_TO}" \
-            --data-urlencode "text=${MESSAGE}" \
-            -d "parse_mode=Markdown"
-
-      - name: Telegram failure notification
-        if: failure()
-        continue-on-error: true
-        env:
-          TELEGRAM_TO: ${{ secrets.TELEGRAM_TO }}
-          TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
-        run: |
-          if [[ -z "$TELEGRAM_TO" || -z "$TELEGRAM_TOKEN" ]]; then
-            echo "Telegram secrets not configured; skipping."
-            exit 0
-          fi
-
-          MESSAGE="Lunaris-AOSP 16.2 Pixel 7 build FAILED.
-
-          Device: panther
-          Product: ${{ github.event.inputs.PRODUCT_NAME }}
-          Run: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}"
-
-          curl -sS \
-            -X POST \
-            "https://api.telegram.org/bot${TELEGRAM_TOKEN}/sendMessage" \
-            -d "chat_id=${TELEGRAM_TO}" \
-            --data-urlencode "text=${MESSAGE}" \
-            -d "parse_mode=Markdown"
-
-      - name: Stop Crave jobs on cancellation
-        if: cancelled()
-        continue-on-error: true
-        env:
-          PROJECTFOLDER: ${{ needs.prepare.outputs.PROJECTFOLDER }}
-        run: |
-          cd "$PROJECTFOLDER" || exit 0
-          crave stop --all || true
-          - "no"
-
-      PATCH_LIST:
-        description: "Optional space-separated Gerrit Change-IDs or patch URLs"
-        required: false
-        default: ""
-
-      REMOVALS:
-        description: "Optional paths to remove before syncing"
-        required: false
-        default: ""
-
-
-jobs:
-
-  # ============================================================
-  # START CRAVE / SELF-HOSTED RUNNER
-  # ============================================================
-
-  Start-Runner:
-
-    runs-on: ubuntu-latest
-
-    steps:
-
-      - name: Checkout code
-        uses: actions/checkout@v4
-
-      - name: Install required packages
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y \
-            tmux \
-            jq \
-            curl \
-            gettext
-
-      - name: Configure Crave
-        run: |
-          set -e
-
-          echo "DCDEVSPACE status: ${DCDEVSPACE}"
-
-          if [[ "$DCDEVSPACE" == *1* ]]; then
-
-            echo "Already inside Crave devspace."
-
-          else
-
-            mkdir -p "${HOME}/bin"
-
-            curl -fsSL \
-              https://raw.githubusercontent.com/accupara/crave/master/get_crave.sh \
-              | bash -s --
-
-            mv "${PWD}/crave" "${HOME}/bin/crave"
-
-            sudo ln -sf \
-              "${HOME}/bin/crave" \
-              /usr/bin/crave
-
-            if [[ -f "${PWD}/crave.conf.sample" ]]; then
-
-              envsubst < "${PWD}/crave.conf.sample" \
-                > "${PWD}/crave.conf"
-
-              rm -f "${PWD}/crave.conf.sample"
-
-            fi
-
-          fi
-
-        env:
-          CRAVE_USERNAME: ${{ secrets.CRAVE_USERNAME }}
-          CRAVE_TOKEN: ${{ secrets.CRAVE_TOKEN }}
-
-      - name: Start GitHub Actions runner
-        run: |
-          set -e
-
-          crave ${{ secrets.CRAVE_FLAGS }} devspace -- '
             set -e
 
-            echo "Looking for GitHub Actions runner..."
+            echo 'Checking for GitHub Actions runner...'
 
-            if [ -f actions-runner/run.sh ]; then
-              echo "Runner found."
-            else
-              echo "ERROR: actions-runner/run.sh was not found."
-              exit 1
-            fi
+            if [[ -f actions-runner/run.sh ]]; then
 
-            if tmux has-session -t ghactions 2>/dev/null; then
-              echo "GitHub Actions runner already running."
-            else
+              echo 'GitHub Actions runner found.'
+
+              if tmux has-session -t ghactions 2>/dev/null; then
+                echo 'Existing runner session found. Restarting...'
+                tmux kill-session -t ghactions
+              fi
+
               tmux new-session -d -s ghactions
-              tmux send-keys -t ghactions "./actions-runner/run.sh" Enter
-              echo "GitHub Actions runner started."
+
+              tmux send-keys \
+                -t ghactions \
+                'cd actions-runner && ./run.sh' \
+                Enter
+
+              sleep 5
+
+              echo 'GitHub Actions runner started.'
+
+            else
+
+              echo 'ERROR: actions-runner/run.sh was not found.'
+              echo
+              echo 'The Crave self-hosted runner has not been created yet.'
+              echo 'Run the Create Selfhosted Runner workflow first.'
+
+              exit 1
+
             fi
-          '
-
-        env:
-          CRAVE_USERNAME: ${{ secrets.CRAVE_USERNAME }}
-          CRAVE_TOKEN: ${{ secrets.CRAVE_TOKEN }}
-
-
-  # ============================================================
+          "
+            # ============================================================
   # PREPARE
   # ============================================================
 
   prepare:
 
-    name: Prepare Lunaris-AOSP Build
+    name: Validate Lunaris Build
 
     runs-on: ubuntu-latest
 
@@ -1373,259 +178,126 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Check Crave credentials
+      - name: Validate Pixel 7 configuration
+        env:
+          DEVICE_NAME: ${{ inputs.DEVICE_NAME }}
+          PRODUCT_NAME: ${{ inputs.PRODUCT_NAME }}
+          BUILD_COMMAND: ${{ inputs.BUILD_COMMAND }}
         run: |
-          if [[ -z "${{ secrets.CRAVE_USERNAME }}" ||
-                -z "${{ secrets.CRAVE_TOKEN }}" ]]; then
+          set -e
 
-            echo "ERROR: CRAVE_USERNAME or CRAVE_TOKEN is missing."
+          echo "Device:  $DEVICE_NAME"
+          echo "Product: $PRODUCT_NAME"
+          echo "Build:   $BUILD_COMMAND"
+
+          if [[ "$DEVICE_NAME" != "panther" ]]; then
+            echo "::error::This workflow is configured for Pixel 7 (panther)."
             exit 1
-
           fi
 
-      - name: Configure Lunaris variables
-        id: variables
-        run: |
+          if [[ "$PRODUCT_NAME" != "lineage_panther-bp4a-user" ]]; then
+            echo "::error::Wrong Pixel 7 lunch target."
+            echo "::error::Expected: lineage_panther-bp4a-user"
+            exit 1
+          fi
 
-          PROJECTFOLDER="/crave-devspaces/LunarisAOSP"
+          if [[ -z "$BUILD_COMMAND" ]]; then
+            echo "::error::BUILD_COMMAND cannot be empty."
+            exit 1
+          fi
 
-          # Generic AOSP/Lunaris Crave project.
-          PROJECTID="35"
-
-          # This is taken directly from the Lunaris-AOSP 16.2 README.
-          REPO_INIT="repo init -u https://github.com/Lunaris-AOSP/android -b 16.2 --git-lfs"
-
-          # Lunaris README uses:
-          #
-          # lunch lineage_codename-bp4a-user
-          #
-          # Pixel 7 = panther
-          #
-          LUNCH="lunch lineage_${{ github.event.inputs.DEVICE_NAME }}-bp4a-user"
-
-          echo "PROJECTFOLDER=$PROJECTFOLDER" >> "$GITHUB_OUTPUT"
-          echo "PROJECTID=$PROJECTID" >> "$GITHUB_OUTPUT"
-          echo "REPO_INIT=$REPO_INIT" >> "$GITHUB_OUTPUT"
-          echo "LUNCH=$LUNCH" >> "$GITHUB_OUTPUT"
-
-          echo "=========================================="
-          echo "Lunaris-AOSP Build"
-          echo "=========================================="
-          echo "ROM:       Lunaris-AOSP 16.2"
-          echo "Manifest:  https://github.com/Lunaris-AOSP/android"
-          echo "Branch:    16.2"
-          echo "Device:    ${{ github.event.inputs.DEVICE_NAME }}"
-          echo "Product:   lineage_${{ github.event.inputs.DEVICE_NAME }}-bp4a-user"
-          echo "Build:     ${{ github.event.inputs.BUILD_COMMAND }}"
-          echo "Clean:     ${{ github.event.inputs.CLEAN_BUILD }}"
-          echo "=========================================="
-
-    outputs:
-      PROJECTFOLDER: ${{ steps.variables.outputs.PROJECTFOLDER }}
-      PROJECTID: ${{ steps.variables.outputs.PROJECTID }}
-      REPO_INIT: ${{ steps.variables.outputs.REPO_INIT }}
-      LUNCH: ${{ steps.variables.outputs.LUNCH }}
+          echo "Configuration looks good."
 
 
   # ============================================================
-  # BUILD
+  # ACTUAL BUILD
   # ============================================================
 
   build:
 
     name: Build Lunaris-AOSP 16.2
 
-    timeout-minutes: 1440
-
-    needs: prepare
+    needs:
+      - start-runner
+      - prepare
 
     runs-on: self-hosted
 
+    timeout-minutes: 1440
+
     concurrency:
-      group: ${{ github.repository_owner }}-lunaris-pixel7
+      group: lunaris-panther
       cancel-in-progress: false
+
+    env:
+
+      DEVICE_NAME: ${{ inputs.DEVICE_NAME }}
+
+      PRODUCT_NAME: ${{ inputs.PRODUCT_NAME }}
+
+      BUILD_COMMAND: ${{ inputs.BUILD_COMMAND }}
+
+      CLEAN_BUILD: ${{ inputs.CLEAN_BUILD }}
+
+      PATCH_LIST: ${{ inputs.PATCH_LIST }}
+
+      PROJECTFOLDER: /crave-devspaces/LunarisAOSP16
 
     steps:
 
       # --------------------------------------------------------
-      # SET VARIABLES
+      # VERIFY RUNNER
       # --------------------------------------------------------
 
-      - name: Set build variables
+      - name: Verify Crave runner
         run: |
+          set -e
 
-          echo "PROJECTFOLDER=${{ needs.prepare.outputs.PROJECTFOLDER }}" >> "$GITHUB_ENV"
-          echo "PROJECTID=${{ needs.prepare.outputs.PROJECTID }}" >> "$GITHUB_ENV"
-          echo "REPO_INIT=${{ needs.prepare.outputs.REPO_INIT }}" >> "$GITHUB_ENV"
-          echo "LUNCH=${{ needs.prepare.outputs.LUNCH }}" >> "$GITHUB_ENV"
+          echo "Hostname:"
+          hostname
 
-          echo "DEVICE_NAME=${{ github.event.inputs.DEVICE_NAME }}" >> "$GITHUB_ENV"
-          echo "PRODUCT_NAME=${{ github.event.inputs.PRODUCT_NAME }}" >> "$GITHUB_ENV"
+          echo
+          echo "DCDEVSPACE:"
+          echo "${DCDEVSPACE:-not-set}"
+
+          if [[ "${DCDEVSPACE:-0}" != *1* ]]; then
+            echo "::error::This job is not running inside a Crave devspace."
+            exit 1
+          fi
+
+          echo
+          echo "Crave devspace confirmed."
 
 
       # --------------------------------------------------------
-      # TELEGRAM START
+      # CHECK TOOLS
       # --------------------------------------------------------
 
-      - name: Telegram - Build Started
-        continue-on-error: true
+      - name: Check required tools
         run: |
+          set -e
 
-          send_telegram_message() {
-
-            curl -fsS -X POST \
-              "https://api.telegram.org/bot${botToken}/sendMessage" \
-              -d "chat_id=${chatId}" \
-              --data-urlencode "text=$1" \
-              -d "parse_mode=Markdown"
-
+          command -v crave || {
+            echo "::error::Crave command not found."
+            exit 1
           }
 
-          send_telegram_message \
-            "🚀 *Lunaris-AOSP 16.2 Build Started*%0A%0A\
-            Device: \`${DEVICE_NAME}\`%0A\
-            Target: \`${PRODUCT_NAME}\`%0A\
-            Run: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          command -v repo || {
+            echo "::error::repo command not found."
+            exit 1
+          }
 
-        env:
-          chatId: ${{ secrets.TELEGRAM_TO }}
-          botToken: ${{ secrets.TELEGRAM_TOKEN }}
+          command -v git || {
+            echo "::error::git command not found."
+            exit 1
+          }
 
+          command -v jq || {
+            echo "::error::jq command not found."
+            exit 1
+          }
 
-      # --------------------------------------------------------
-      # CLEAN GITHUB ACTIONS WORKSPACE
-      # --------------------------------------------------------
-
-      - name: Cleanup workspace
-        run: |
-          rm -rf ./*
-
-
-      # --------------------------------------------------------
-      # CHECK BASHRC
-      # --------------------------------------------------------
-
-      - name: Check .bashrc
-        continue-on-error: true
-        run: |
-
-          set +e
-
-          output=$(source ~/.bashrc 2>&1)
-          status=$?
-
-          echo "$output"
-
-          if [[ "$status" -ne 0 ]]; then
-            echo "WARNING: .bashrc returned an error."
-          fi
-
-
-      # --------------------------------------------------------
-      # CREATE CRAVE PROJECT
-      # --------------------------------------------------------
-
-      - name: Create Crave project
-        run: |
-
-          set -e
-
-          echo "DCDEVSPACE=${DCDEVSPACE}"
-
-          if [[ "$DCDEVSPACE" != *1* ]]; then
-
-            echo "Creating local devspace..."
-
-            mkdir -p "${GITHUB_WORKSPACE}/devspace"
-
-            sudo mkdir -p /crave-devspaces
-
-            sudo ln -sfn \
-              "${GITHUB_WORKSPACE}/devspace" \
-              /crave-devspaces
-
-            sudo chmod 777 /crave-devspaces
-
-          else
-
-            echo "Already inside Crave devspace."
-
-          fi
-
-
-          # Destroy old clone.
-
-          if grep -q "$PROJECTFOLDER" \
-            <(crave clone list --json | jq -r '.clones[]."Cloned At"') \
-            || [[ "$DCDEVSPACE" == "1" ]]; then
-
-            echo "Removing previous Crave clone..."
-
-            crave clone destroy -y "$PROJECTFOLDER" \
-              || echo "Previous clone could not be removed."
-
-          fi
-
-
-          # Create clone.
-
-          if [[ "$DCDEVSPACE" == *1* ]]; then
-
-            echo "Creating Crave clone..."
-
-            crave clone create \
-              --projectID "$PROJECTID" \
-              "$PROJECTFOLDER"
-
-          else
-
-            echo "Creating local project folder..."
-
-            mkdir -p "$PROJECTFOLDER"
-
-          fi
-
-
-      # --------------------------------------------------------
-      # CHECKOUT REPOSITORY
-      # --------------------------------------------------------
-
-      - name: Checkout workflow repository
-        uses: actions/checkout@v4
-
-
-      # --------------------------------------------------------
-      # INSTALL REPO
-      # --------------------------------------------------------
-
-      - name: Configure repo
-        run: |
-
-          set -e
-
-          if command -v repo >/dev/null 2>&1; then
-
-            echo "repo already installed."
-
-          else
-
-            echo "Installing repo..."
-
-            mkdir -p "${HOME}/bin"
-
-            curl -fsSL \
-              https://storage.googleapis.com/git-repo-downloads/repo \
-              -o "${HOME}/bin/repo"
-
-            chmod +x "${HOME}/bin/repo"
-
-            sudo ln -sf \
-              "${HOME}/bin/repo" \
-              /usr/bin/repo
-
-          fi
-
-          repo --version
+          echo "All required tools found."
 
 
       # --------------------------------------------------------
@@ -1634,585 +306,323 @@ jobs:
 
       - name: Configure git
         run: |
-
-          git config --global user.name \
-            "${{ github.actor }}"
+          git config --global user.name "${GITHUB_ACTOR}"
 
           git config --global user.email \
-            "${{ github.actor_id }}+${{ github.actor }}@users.noreply.github.com"
+            "${GITHUB_ACTOR_ID}+${GITHUB_ACTOR}@users.noreply.github.com"
 
 
       # --------------------------------------------------------
-      # CONFIGURE CRAVE
+      # CREATE CRAVE PROJECT
       # --------------------------------------------------------
 
-      - name: Configure Crave environment
-        run: |
-
-          set -e
-
-          echo "DCDEVSPACE=${DCDEVSPACE}"
-
-          mkdir -p \
-            "$PROJECTFOLDER/.repo/manifests"
-
-
-          if [[ "$DCDEVSPACE" == *1* ]]; then
-
-            echo "Already running inside Crave."
-
-          else
-
-            mkdir -p "${HOME}/bin"
-
-            curl -fsSL \
-              https://raw.githubusercontent.com/accupara/crave/master/get_crave.sh \
-              | bash -s --
-
-            mv "${PWD}/crave" "${HOME}/bin/crave"
-
-            sudo ln -sf \
-              "${HOME}/bin/crave" \
-              /usr/bin/crave
-
-            if [[ -f "${PWD}/crave.conf.sample" ]]; then
-
-              envsubst < "${PWD}/crave.conf.sample" \
-                > "${PWD}/crave.conf"
-
-              rm -f "${PWD}/crave.conf.sample"
-
-            fi
-
-            if [[ -f "${PWD}/crave.conf" ]]; then
-              cp "${PWD}/crave.conf" "$PROJECTFOLDER/"
-            fi
-
-          fi
-
-
-          # Use custom Crave configuration if supplied.
-
-          if [[ -n "${{ secrets.CUSTOM_YAML }}" ]]; then
-
-            echo "Using custom Crave YAML."
-
-            printf '%s\n' \
-              "${{ secrets.CUSTOM_YAML }}" \
-              > "$PROJECTFOLDER/.repo/manifests/crave.yaml"
-
-          elif [[ -f configs/crave/crave.yaml.aosp ]]; then
-
-            echo "Using repository Crave YAML."
-
-            cp \
-              configs/crave/crave.yaml.aosp \
-              "$PROJECTFOLDER/.repo/manifests/crave.yaml"
-
-          else
-
-            echo "No custom Crave YAML found."
-
-          fi
-
+      - name: Create Lunaris Crave project
         env:
           CRAVE_USERNAME: ${{ secrets.CRAVE_USERNAME }}
           CRAVE_TOKEN: ${{ secrets.CRAVE_TOKEN }}
+        run: |
+
+          set -e
+
+          mkdir -p "$PROJECTFOLDER"
+
+          echo "Project folder:"
+          echo "$PROJECTFOLDER"
+
+          echo
+          echo "Checking existing Crave clones..."
+
+          if crave clone list --json \
+            | jq -e \
+              --arg PROJECT "$PROJECTFOLDER" \
+              '.clones[]? | .["Cloned At"] == $PROJECT' \
+              >/dev/null 2>&1
+          then
+
+            echo "Existing Lunaris clone found."
+
+          else
+
+            echo "Creating Lunaris Crave clone..."
+
+            crave clone create \
+              --projectID 35 \
+              "$PROJECTFOLDER"
+
+          fi
 
 
       # --------------------------------------------------------
-      # INITIALIZE LUNARIS
+      # REPO INIT
       # --------------------------------------------------------
 
       - name: Initialize Lunaris-AOSP 16.2
+        working-directory: /crave-devspaces/LunarisAOSP16
         run: |
 
           set -e
 
-          cd "$PROJECTFOLDER"
+          if [[ ! -d ".repo" ]]; then
 
-          echo "=========================================="
-          echo "Initializing Lunaris-AOSP"
-          echo "=========================================="
+            echo "Initializing Lunaris-AOSP 16.2..."
 
-          echo "$REPO_INIT"
+            repo init \
+              -u https://github.com/Lunaris-AOSP/android.git \
+              -b 16.2 \
+              --git-lfs
 
-          eval "$REPO_INIT"
+          else
+
+            echo ".repo already exists."
+
+          fi
 
 
       # --------------------------------------------------------
-      # CREATE DEVICE LOCAL MANIFEST
+      # PIXEL 7 MANIFEST
       # --------------------------------------------------------
 
-      - name: Prepare Pixel 7 local manifest
+      - name: Install Pixel 7 manifest
+        working-directory: /crave-devspaces/LunarisAOSP16
         run: |
 
           set -e
 
-          mkdir -p "$PROJECTFOLDER/.repo/local_manifests"
+          mkdir -p .repo/local_manifests
 
-          cat > "$PROJECTFOLDER/.repo/local_manifests/panther.xml" <<'EOF'
-          <?xml version="1.0" encoding="UTF-8"?>
-          <manifest>
+          cat > .repo/local_manifests/pixel7.xml <<'EOF'
 
-            <!-- Pixel 7 / Pixel 7 family device tree -->
-            <project
-              name="LineageOS/android_device_google_pantah"
-              path="device/google/pantah"
-              remote="github"
-              revision="lineage-21.0" />
+<?xml version="1.0" encoding="UTF-8"?>
 
-            <!-- Google Tensor G2 / GS201 kernel -->
-            <project
-              name="kerneltoast/android_kernel_google_gs201"
-              path="kernel/google/gs201"
-              remote="github"
-              revision="16.0.0-sultan" />
+<manifest>
 
-            <!-- Pixel 7 proprietary vendor -->
-            <project
-              name="TheMuppets/proprietary_vendor_google_panther"
-              path="vendor/google/panther"
-              remote="github"
-              revision="lineage-21.0" />
+  <!--
+    Pixel 7 / panther
 
-          </manifest>
-          EOF
+    Device tree:
+    device/google/pantah
+  -->
 
-          echo "=========================================="
-          echo "Pixel 7 local manifest"
-          echo "=========================================="
+  <project
+    name="LineageOS/android_device_google_panther"
+    path="device/google/pantah"
+    revision="lineage-23.2"
+    clone-depth="1" />
 
-          cat "$PROJECTFOLDER/.repo/local_manifests/panther.xml"
+</manifest>
+
+EOF
+
+          echo
+          echo "Pixel 7 manifest:"
+          cat .repo/local_manifests/pixel7.xml
 
 
       # --------------------------------------------------------
-      # SYNC TEST / VERIFY MANIFEST
+      # SYNC
       # --------------------------------------------------------
 
-      - name: Verify Lunaris manifest
+      - name: Sync Lunaris sources
+        working-directory: /crave-devspaces/LunarisAOSP16
         run: |
 
           set -e
 
-          cd "$PROJECTFOLDER"
+          echo "Starting repository sync..."
 
-          echo "Checking repo manifest..."
-
-          repo manifest -r > /tmp/lunaris-manifest.xml
-
-          echo "Manifest generated successfully."
-
-          grep -E \
-            "pantah|gs201|panther" \
-            /tmp/lunaris-manifest.xml \
-            || true
+          repo sync \
+            -c \
+            -j"$(nproc --all)" \
+            --force-sync \
+            --no-clone-bundle \
+            --no-tags
 
 
       # --------------------------------------------------------
-      # START BUILD
+      # OPTIONAL PATCHES
       # --------------------------------------------------------
 
-      - name: Start Lunaris compilation through Crave
+      - name: Apply optional patches
+        if: ${{ inputs.PATCH_LIST != '' }}
+        working-directory: /crave-devspaces/LunarisAOSP16
+        env:
+          PATCH_LIST: ${{ inputs.PATCH_LIST }}
         run: |
 
           set -e
 
-          cd "$PROJECTFOLDER"
+          echo "Patch list supplied."
+
+          for PATCH in $PATCH_LIST; do
+
+            echo
+            echo "Processing:"
+            echo "$PATCH"
+
+            if [[ "$PATCH" =~ ^https?:// ]]; then
+
+              echo "Downloading patch/script..."
+
+              curl -fsSL "$PATCH" -o /tmp/lunaris_patch.sh
+
+              chmod +x /tmp/lunaris_patch.sh
+
+              /tmp/lunaris_patch.sh
+
+            else
+
+              echo "Running patch command:"
+              echo "$PATCH"
+
+              bash -c "$PATCH"
+
+            fi
+
+          done
 
 
-          # Clean build option.
+      # --------------------------------------------------------
+      # BUILD
+      # --------------------------------------------------------
 
-          CLEAN=""
+      - name: Build Lunaris-AOSP
+        working-directory: /crave-devspaces/LunarisAOSP16
+        env:
+          CRAVE_USERNAME: ${{ secrets.CRAVE_USERNAME }}
+          CRAVE_TOKEN: ${{ secrets.CRAVE_TOKEN }}
+          CRAVE_FLAGS: ${{ secrets.CRAVE_FLAGS }}
+        run: |
 
-          if [[ "${{ github.event.inputs.CLEAN_BUILD }}" == "yes" ]]; then
+          set -e
+
+          if [[ "$CLEAN_BUILD" == "yes" ]]; then
             CLEAN="--clean"
-            echo "Clean Crave build requested."
+          else
+            CLEAN=""
           fi
 
+          echo
+          echo "========================================"
+          echo " Lunaris-AOSP 16.2"
+          echo " Pixel 7 / panther"
+          echo "========================================"
+          echo
+          echo "Product:"
+          echo "$PRODUCT_NAME"
+          echo
+          echo "Build command:"
+          echo "$BUILD_COMMAND"
+          echo
+          echo "Clean:"
+          echo "$CLEAN_BUILD"
+          echo
 
-          # Paid build option.
+          echo "Starting Crave build..."
 
-          PAID=""
+          if [[ -n "$CRAVE_FLAGS" ]]; then
 
-          if [[ -n "${{ secrets.PAID }}" ]]; then
+            crave $CRAVE_FLAGS run \
+              --no-patch \
+              $CLEAN \
+              -- "
 
-            echo "Paid Crave build enabled."
+                set -e
 
-            PAID="--platform aosp-silver"
+                cd /crave-devspaces/LunarisAOSP16
 
-          fi
-
-
-          # Prevent stale project definitions.
-
-          if [[ -f "${HOME}/crave.conf" ]]; then
-
-            jq '.projects = []' \
-              "${HOME}/crave.conf" \
-              > "${HOME}/crave.conf.tmp"
-
-            mv \
-              "${HOME}/crave.conf.tmp" \
-              "${HOME}/crave.conf"
-
-          fi
-
-
-          echo "=========================================="
-          echo "QUEUEING LUNARIS BUILD"
-          echo "=========================================="
-
-          crave ${{ secrets.CRAVE_FLAGS }} \
-            run \
-            --no-patch \
-            ${PAID} \
-            ${CLEAN} \
-            -- '
-
-              set -e
-
-
-              echo "=========================================="
-              echo "Inside Crave build environment"
-              echo "=========================================="
-
-
-              # ------------------------------------------------
-              # Device manifest
-              # ------------------------------------------------
-
-              rm -rf .repo/local_manifests
-
-              mkdir -p .repo/local_manifests
-
-
-              cat > .repo/local_manifests/panther.xml <<'"'"'EOF'
-              <?xml version="1.0" encoding="UTF-8"?>
-              <manifest>
-
-                <project
-                  name="LineageOS/android_device_google_pantah"
-                  path="device/google/pantah"
-                  remote="github"
-                  revision="lineage-21.0" />
-
-                <project
-                  name="kerneltoast/android_kernel_google_gs201"
-                  path="kernel/google/gs201"
-                  remote="github"
-                  revision="16.0.0-sultan" />
-
-                <project
-                  name="TheMuppets/proprietary_vendor_google_panther"
-                  path="vendor/google/panther"
-                  remote="github"
-                  revision="lineage-21.0" />
-
-              </manifest>
-              EOF
-
-
-              echo "Local manifest:"
-              cat .repo/local_manifests/panther.xml
-
-
-              # ------------------------------------------------
-              # Optional removals
-              # ------------------------------------------------
-
-              if [[ -n "${{ github.event.inputs.REMOVALS }}" ]]; then
-
-                echo "Removing requested paths..."
-
-                rm -rf ${{ github.event.inputs.REMOVALS }}
-
-              fi
-
-
-              # ------------------------------------------------
-              # Sync Lunaris
-              # ------------------------------------------------
-
-              echo "=========================================="
-              echo "SYNCING LUNARIS-AOSP 16.2"
-              echo "=========================================="
-
-
-              if [[ -f /usr/bin/resync ]]; then
-
-                /usr/bin/resync
-
-              elif [[ -x /opt/crave/resync.sh ]]; then
-
-                /opt/crave/resync.sh
-
-              else
-
-                repo sync \
-                  -c \
-                  -j$(nproc --all) \
-                  --force-sync \
-                  --no-clone-bundle \
-                  --no-tags
-
-              fi
-
-
-              # ------------------------------------------------
-              # Build environment
-              # ------------------------------------------------
-
-              export BUILD_USERNAME="${{ github.actor }}"
-              export BUILD_HOSTNAME="crave"
-
-
-              echo "=========================================="
-              echo "SETTING UP BUILD ENVIRONMENT"
-              echo "=========================================="
-
-
-              if [[ -f build/envsetup.sh ]]; then
+                if [ -x /opt/crave/resync.sh ]; then
+                  /opt/crave/resync.sh
+                fi
 
                 source build/envsetup.sh
 
-              else
+                lunch ${PRODUCT_NAME}
 
-                echo "ERROR: build/envsetup.sh was not found."
+                make installclean
 
-                exit 1
+                ${BUILD_COMMAND}
 
-              fi
+              "
 
+          else
 
-              # ------------------------------------------------
-              # Optional patches
-              # ------------------------------------------------
+            crave run \
+              --no-patch \
+              $CLEAN \
+              -- "
 
-              PATCHES="${{ github.event.inputs.PATCH_LIST }}"
+                set -e
 
+                cd /crave-devspaces/LunarisAOSP16
 
-              if [[ -n "$PATCHES" ]]; then
+                if [ -x /opt/crave/resync.sh ]; then
+                  /opt/crave/resync.sh
+                fi
 
-                echo "=========================================="
-                echo "APPLYING PATCHES"
-                echo "=========================================="
+                source build/envsetup.sh
 
+                lunch ${PRODUCT_NAME}
 
-                for patch in $PATCHES; do
+                make installclean
 
-                  if [[ "$patch" =~ ^https?:// ]]; then
+                ${BUILD_COMMAND}
 
-                    echo "Applying patch script:"
-                    echo "$patch"
+              "
 
-                    curl -fsSL "$patch" | bash
-
-                  else
-
-                    echo "Applying Gerrit change:"
-                    echo "$patch"
-
-                    repopick "$patch"
-
-                  fi
-
-                done
-
-              fi
-
-
-              # ------------------------------------------------
-              # Lunch
-              # ------------------------------------------------
-
-              echo "=========================================="
-              echo "LUNCH TARGET"
-              echo "=========================================="
-
-
-              ${{ needs.prepare.outputs.LUNCH }}
-
-
-              # ------------------------------------------------
-              # Install clean
-              # ------------------------------------------------
-
-              echo "Running make installclean..."
-
-              make installclean
-
-
-              # ------------------------------------------------
-              # BUILD
-              # ------------------------------------------------
-
-              echo "=========================================="
-              echo "BUILD STARTING"
-              echo "=========================================="
-
-              echo "ROM:      Lunaris-AOSP 16.2"
-              echo "Device:   ${{ github.event.inputs.DEVICE_NAME }}"
-              echo "Target:   ${{ github.event.inputs.PRODUCT_NAME }}"
-              echo "Command:  ${{ github.event.inputs.BUILD_COMMAND }}"
-              echo "Run ID:   ${{ github.run_id }}"
-
-              echo "=========================================="
-
-
-              ${{ github.event.inputs.BUILD_COMMAND }}
-
-
-              echo "=========================================="
-              echo "BUILD FINISHED"
-              echo "=========================================="
-
-            '
+          fi
 
 
       # --------------------------------------------------------
-      # SUCCESS TELEGRAM
+      # ARTIFACT UPLOAD
       # --------------------------------------------------------
 
-      - name: Telegram - Build Succeeded
+      - name: Upload build artifacts
         if: success()
         continue-on-error: true
-        run: |
-
-          send_telegram_message() {
-
-            curl -fsS -X POST \
-              "https://api.telegram.org/bot${botToken}/sendMessage" \
-              -d "chat_id=${chatId}" \
-              --data-urlencode "text=$1" \
-              -d "parse_mode=Markdown"
-
-          }
-
-          send_telegram_message \
-            "✅ *Lunaris-AOSP 16.2 Build Succeeded!*%0A%0A\
-            Device: \`${DEVICE_NAME}\`%0A\
-            Target: \`${PRODUCT_NAME}\`%0A\
-            Run: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}"
-
         env:
-          chatId: ${{ secrets.TELEGRAM_TO }}
-          botToken: ${{ secrets.TELEGRAM_TOKEN }}
-
-
-      # --------------------------------------------------------
-      # FAILURE / CANCEL TELEGRAM
-      # --------------------------------------------------------
-
-      - name: Telegram - Build Failed
-        if: failure() || cancelled()
-        continue-on-error: true
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_UPLOAD_LIMIT: ${{ secrets.GH_UPLOAD_LIMIT }}
+          EXTRA_FILES: ${{ secrets.EXTRA_FILES }}
+        working-directory: /crave-devspaces/LunarisAOSP16
         run: |
 
-          if [[ "${{ job.status }}" == "cancelled" ]]; then
-            STATUS="❌ Build cancelled."
-          else
-            STATUS="❌ Build failed."
-          fi
+          set -e
 
+          echo "Preparing artifact upload..."
 
-          send_telegram_message() {
+          printf '%s\n' "$GH_TOKEN" > token.txt
 
-            curl -fsS -X POST \
-              "https://api.telegram.org/bot${botToken}/sendMessage" \
-              -d "chat_id=${chatId}" \
-              --data-urlencode "text=$1" \
-              -d "parse_mode=Markdown"
+          REMOTE_DIR="$(
+            crave ssh -- pwd \
+            | grep -v Select \
+            | tr -d '\r'
+          )"
 
-          }
+          crave push \
+            token.txt \
+            -d "$REMOTE_DIR/"
 
+          crave ssh -- "
+            export GH_UPLOAD_LIMIT='$GH_UPLOAD_LIMIT'
 
-          send_telegram_message \
-            "${STATUS}%0A%0A\
-            Device: \`${DEVICE_NAME}\`%0A\
-            Target: \`${PRODUCT_NAME}\`%0A\
-            Run: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}"
-
-        env:
-          chatId: ${{ secrets.TELEGRAM_TO }}
-          botToken: ${{ secrets.TELEGRAM_TOKEN }}
+            bash /opt/crave/github-actions/upload.sh \
+              '${GITHUB_RUN_ID}' \
+              '${DEVICE_NAME}' \
+              '${GITHUB_REPOSITORY}' \
+              '${PRODUCT_NAME}-${GITHUB_RUN_ID}' \
+              '${EXTRA_FILES}'
+          "
 
 
       # --------------------------------------------------------
-      # SHOW CRAVE ERROR
+      # CLEANUP ON CANCEL
       # --------------------------------------------------------
 
-      - name: Display Crave error.log
-        if: failure()
-        continue-on-error: true
+      - name: Stop Crave jobs
+        if: cancelled()
+        working-directory: /crave-devspaces/LunarisAOSP16
         run: |
 
-          cd "$PROJECTFOLDER"
+          crave stop --all
 
-          echo "Attempting to retrieve Crave error.log..."
-
-          crave ssh -- sleep 2 || true
-
-          if crave pull out/error.log; then
-
-            echo "=========================================="
-            echo "Crave error.log"
-            echo "=========================================="
-
-            cat out/error.log
-
-          else
-
-            echo "Unable to retrieve error.log."
-
-          fi
-
-
-      # --------------------------------------------------------
-      # TELEGRAM UPLOAD
-      # --------------------------------------------------------
-
-      - name: Upload build to Telegram
-        if: always()
-        continue-on-error: true
-        run: |
-
-          cd "$PROJECTFOLDER"
-
-          if crave ssh -- test -f /opt/crave/telegram/upload.sh; then
-
-            crave ssh -- \
-              "export TG_UPLOAD_LIMIT='${{ secrets.TG_UPLOAD_LIMIT }}'; \
-              bash /opt/crave/telegram/upload.sh \
-              '${{ github.event.inputs.DEVICE_NAME }}' \
-              '${{ secrets.EXTRA_FILES }}'"
-
-          else
-
-            echo "Crave Telegram upload script not found."
-
-          fi
-
-
-      # --------------------------------------------------------
-      # DESTROY CRAVE CLONE
-      # --------------------------------------------------------
-
-      - name: Destroy Crave clone
-        if: always()
-        run: |
-
-          if grep -q "$PROJECTFOLDER" \
-            <(crave clone list --json | jq -r '.clones[]."Cloned At"') \
-            || [[ "$DCDEVSPACE" == "1" ]]; then
-
-            echo "Destroying Crave clone..."
-
-            crave clone destroy -y "$PROJECTFOLDER" \
-              || echo "Warning: failed to destroy Crave clone."
-
-          else
-
-            echo "No Crave clone found."
-
-          fi
+          
