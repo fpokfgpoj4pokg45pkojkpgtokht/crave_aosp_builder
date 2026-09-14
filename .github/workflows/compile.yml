@@ -383,10 +383,6 @@ jobs:
             -printf '%f\n' \
             2>/dev/null || true
 
-      # ----------------------------------------------------------
-      # UPLOAD ARTIFACTS
-      # ----------------------------------------------------------
-
       - name: Upload ROM artifacts
         if: success()
         uses: actions/upload-artifact@v4
@@ -398,6 +394,7 @@ jobs:
             android/out/target/product/${{ inputs.DEVICE_NAME }}/*.zip
             android/out/target/product/${{ inputs.DEVICE_NAME }}/*.img
             android/out/target/product/${{ inputs.DEVICE_NAME }}/*boot*.img
+            android/out/target/product/${{ inputs.DEVICE_NAME }}/*vendor*.img
             
 jobs:
   build:
