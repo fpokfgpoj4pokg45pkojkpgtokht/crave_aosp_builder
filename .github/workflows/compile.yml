@@ -240,8 +240,7 @@ jobs:
 
           mkdir -p .repo/local_manifests
 
-          cat > .repo/local_manifests/pixel7.xml << 'EOF'
-
+          cat > .repo/local_manifests/pixel7.xml <<'EOF'
 <?xml version="1.0" encoding="UTF-8"?>
 <manifest>
 
@@ -279,6 +278,14 @@ EOF
           echo "Pixel 7 manifest:"
           cat .repo/local_manifests/pixel7.xml
 
+          echo "Validating manifest..."
+
+          python3 - <<'PY'
+          import xml.etree.ElementTree as ET
+          ET.parse(".repo/local_manifests/pixel7.xml")
+          print("Manifest XML is valid.")
+          PY
+
       # ------------------------------------------------------------
       # SYNC SOURCE
       # ------------------------------------------------------------
@@ -289,9 +296,7 @@ EOF
         run: |
           set -e
 
-          echo "======================================"
-          echo " Syncing Lunaris-AOSP source"
-          echo "======================================"
+          echo "Starting repo sync..."
 
           repo sync \
             --force-sync \
@@ -300,7 +305,6 @@ EOF
             --optimized-fetch \
             --prune \
             -j2
-
       # ------------------------------------------------------------
       # VERIFY SOURCE
       # ------------------------------------------------------------
