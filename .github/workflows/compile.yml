@@ -1,4 +1,8 @@
 #
+# Copyright (C) 2024-2025 Antonino Scordino
+# Copyright (C) 2024-2025 Souhrud Reddy
+# Copyright (C) 2026 Customization for Lunaris-AOSP / Pixel 7
+#
 # SPDX-License-Identifier: Apache-2.0
 #
 
@@ -43,398 +47,10 @@ concurrency:
 
 jobs:
   build:
-    name: Build Lunaris-AOSP - Pixel 7
-    runs-on: ubuntu-latest
-    timeout-minutes: 360
-
-    env:
-      DEVICE_NAME: ${{ inputs.DEVICE_NAME }}
-      PRODUCT_NAME: ${{ inputs.PRODUCT_NAME }}
-      BUILD_COMMAND: ${{ inputs.BUILD_COMMAND }}
-
-      CCACHE_DIR: ${{ github.workspace }}/.ccache
-      CCACHE_MAXSIZE: 8G
-
-    steps:
-
-      # ----------------------------------------------------------
-      # CHECKOUT
-      # ----------------------------------------------------------
-
-      - name: Checkout workflow repository
-        uses: actions/checkout@v4
-
-      # ----------------------------------------------------------
-      # FREE DISK SPACE
-      # ----------------------------------------------------------
-
-      - name: Free disk space
-        shell: bash
-        run: |
-          set -euxo pipefail
-
-          echo "Before cleanup:"
-          df -h
-
-          sudo rm -rf /usr/local/lib/android || true
-          sudo rm -rf /usr/share/dotnet || true
-          sudo rm -rf /opt/ghc || true
-          sudo rm -rf /usr/local/share/powershell || true
-          sudo rm -rf /usr/local/lib/node_modules || true
-
-          sudo docker system prune -af || true
-          sudo apt-get clean
-
-          echo "After cleanup:"
-          df -h
-
-      # ----------------------------------------------------------
-      # INSTALL DEPENDENCIES
-      # ----------------------------------------------------------
-
-      - name: Install dependencies
-        shell: bash
-        run: |
-          set -euxo pipefail
-
-          sudo apt-get update
-
-          sudo apt-get install -y \
-            bc \
-            bison \
-            build-essential \
-            ccache \
-            curl \
-            flex \
-            g++-multilib \
-            gcc-multilib \
-            git \
-            git-lfs \
-            gnupg \
-            gperf \
-            imagemagick \
-            lib32ncurses-dev \
-            lib32readline-dev \
-            lib32z1-dev \
-            libelf-dev \
-            liblz4-tool \
-            libncurses-dev \
-            libssl-dev \
-            libxml2-utils \
-            lzop \
-            openjdk-17-jdk \
-            python3 \
-            rsync \
-            schedtool \
-            squashfs-tools \
-            unzip \
-            xsltproc \
-            zip \
-            zlib1g-dev
-
-          git lfs install --skip-repo
-
-      # ----------------------------------------------------------
-      # INSTALL REPO
-      # ----------------------------------------------------------
-
-      - name: Install repo tool
-        shell: bash
-        run: |
-          set -euxo pipefail
-
-          mkdir -p "$HOME/bin"
-
-          curl -fsSL \
-            https://storage.googleapis.com/git-repo-downloads/repo \
-            -o "$HOME/bin/repo"
-
-          chmod +x "$HOME/bin/repo"
-
-          echo "$HOME/bin" >> "$GITHUB_PATH"
-
-          export PATH="$HOME/bin:$PATH"
-
-          repo --version
-
-      # ----------------------------------------------------------
-      # CONFIGURE GIT
-      # ----------------------------------------------------------
-
-      - name: Configure Git
-        shell: bash
-        run: |
-          set -euxo pipefail
-
-          git config --global user.name "GitHub Actions"
-          git config --global user.email "actions@github.com"
-
-          git config --global protocol.version 2
-
-          git config --global fetch.parallel "$(nproc)"
-
-      # ----------------------------------------------------------
-      # RESTORE CCACHE
-      # ----------------------------------------------------------
-
-      - name: Restore compiler cache
-        uses: actions/cache@v4
-        with:
-          path: .ccache
-          key: lunaris-panther-ccache-${{ github.ref_name }}
-          restore-keys: |
-            lunaris-panther-ccache-
-
-      # ----------------------------------------------------------
-      # INITIALIZE SOURCE
-      # ----------------------------------------------------------
-
-      - name: Initialize Lunaris-AOSP
-        shell: bash
-        run: |
-          set -euxo pipefail
-
-          mkdir -p android
-          cd android
-
-          repo init \
-            -u https://github.com/Lunaris-AOSP/android.git \
-            -b 16.2 \
-            --git-lfs \
-            --depth=1
-
-      # ----------------------------------------------------------
-      # PIXEL 7 MANIFEST
-      # ----------------------------------------------------------
-
-      - name: Create Pixel 7 manifest
-        working-directory: android
-        shell: bash
-        run: |
-          set -euxo pipefail
-
-          mkdir -p .repo/local_manifests
-
-          cat > .repo/local_manifests/pixel7.xml <<'EOF'
-          <?xml version="1.0" encoding="UTF-8"?>
-          <manifest>
-
-            <project
-              name="LineageOS/android_device_google_panther"
-              path="device/google/pantah"
-              revision="lineage-23.2"
-              clone-depth="1" />
-
-            <project
-              name="LineageOS/android_device_google_gs201"
-              path="device/google/gs201"
-              revision="lineage-23.2"
-              clone-depth="1" />
-
-            <project
-              name="LineageOS/android_kernel_google_gs201"
-              path="kernel/google/gs201"
-              revision="lineage-23.2"
-              clone-depth="1" />
-
-            <project
-              name="TheMuppets/proprietary_vendor_google_panther"
-              path="vendor/google/panther"
-              revision="lineage-23.2"
-              clone-depth="1" />
-
-          </manifest>
-          EOF
-
-          python3 - <<'PY'
-          import xml.etree.ElementTree as ET
-          ET.parse(".repo/local_manifests/pixel7.xml")
-          print("Pixel 7 manifest is valid.")
-          PY
-
-      # ----------------------------------------------------------
-      # FAST SOURCE SYNC
-      # ----------------------------------------------------------
-
-      - name: Sync source
-        working-directory: android
-        shell: bash
-        timeout-minutes: 180
-        run: |
-          set -euxo pipefail
-
-          JOBS="$(nproc)"
-
-          echo "Using ${JOBS} sync jobs"
-
-          repo sync \
-            --current-branch \
-            --force-sync \
-            --no-clone-bundle \
-            --no-tags \
-            --optimized-fetch \
-            --prune \
-            --retry-fetches=3 \
-            -j"${JOBS}"
-
-      # ----------------------------------------------------------
-      # VERIFY TREE
-      # ----------------------------------------------------------
-
-      - name: Verify source tree
-        working-directory: android
-        shell: bash
-        run: |
-          set -euxo pipefail
-
-          test -f build/envsetup.sh
-
-          echo "Source tree verified."
-
-      # ----------------------------------------------------------
-      # SETUP CCACHE
-      # ----------------------------------------------------------
-
-      - name: Configure ccache
-        working-directory: android
-        shell: bash
-        run: |
-          set -euxo pipefail
-
-          export USE_CCACHE=1
-          export CCACHE_DIR="${{ github.workspace }}/.ccache"
-          export CCACHE_MAXSIZE=8G
-
-          ccache -M "${CCACHE_MAXSIZE}"
-          ccache -z
-
-          echo "CCACHE_DIR=${CCACHE_DIR}"
-          echo "CCACHE_MAXSIZE=${CCACHE_MAXSIZE}"
-
-      # ----------------------------------------------------------
-      # OPTIONAL CLEAN
-      # ----------------------------------------------------------
-
-      - name: Clean build
-        if: ${{ inputs.CLEAN_BUILD == 'yes' }}
-        working-directory: android
-        shell: bash
-        run: |
-          set -euxo pipefail
-
-          source build/envsetup.sh
-          lunch "${PRODUCT_NAME}"
-
-          m clean
-
-      # ----------------------------------------------------------
-      # BUILD
-      # ----------------------------------------------------------
-
-      - name: Build Lunaris-AOSP
-        working-directory: android
-        shell: bash
-        timeout-minutes: 180
-        run: |
-          set -euxo pipefail
-
-          export USE_CCACHE=1
-          export CCACHE_DIR="${{ github.workspace }}/.ccache"
-          export CCACHE_MAXSIZE=8G
-
-          source build/envsetup.sh
-
-          lunch "${PRODUCT_NAME}"
-
-          echo "========================================"
-          echo " Building Lunaris-AOSP"
-          echo " Device: ${DEVICE_NAME}"
-          echo " Product: ${PRODUCT_NAME}"
-          echo " CPUs: $(nproc)"
-          echo "========================================"
-
-          eval "${BUILD_COMMAND}"
-
-      # ----------------------------------------------------------
-      # CCACHE STATS
-      # ----------------------------------------------------------
-
-      - name: Show ccache statistics
-        if: always()
-        working-directory: android
-        shell: bash
-        run: |
-          ccache -s || true
-
-      # ----------------------------------------------------------
-      # LIST OUTPUT
-      # ----------------------------------------------------------
-
-      - name: List build output
-        if: always()
-        working-directory: android
-        shell: bash
-        run: |
-          echo "Build output:"
-
-          find "out/target/product/${DEVICE_NAME}" \
-            -maxdepth 1 \
-            -type f \
-            -printf '%f\n' \
-            2>/dev/null || true
-
-      - name: Upload ROM artifacts
-        if: success()
-        uses: actions/upload-artifact@v4
-        with:
-          name: lunaris-aosp-16.2-${{ inputs.DEVICE_NAME }}
-          retention-days: 7
-          if-no-files-found: warn
-          path: |
-            android/out/target/product/${{ inputs.DEVICE_NAME }}/*.zip
-            android/out/target/product/${{ inputs.DEVICE_NAME }}/*.img
-            android/out/target/product/${{ inputs.DEVICE_NAME }}/*boot*.img
-            android/out/target/product/${{ inputs.DEVICE_NAME }}/*vendor*.img
-            
-name: Lunaris-AOSP 16.2 - Pixel 7
-
-on:
-  workflow_dispatch:
-    inputs:
-      DEVICE_NAME:
-        description: "Device codename"
-        required: true
-        default: "panther"
-        type: string
-
-      PRODUCT_NAME:
-        description: "Lunch target"
-        required: true
-        default: "lineage_panther-bp4a-user"
-        type: string
-
-      BUILD_COMMAND:
-        description: "Build command"
-        required: true
-        default: "m bacon"
-        type: string
-
-      CLEAN_BUILD:
-        description: "Clean build?"
-        required: true
-        default: "no"
-        type: choice
-        options:
-          - "no"
-          - "yes"
-
-permissions:
-  contents: read
-
-jobs:
-  build:
     name: Build Lunaris-AOSP 16.2 - Pixel 7
 
+    # Requires a configured GitHub larger runner in the "build-runners"
+    # group with the "ubuntu-24.04-16core" label.
     runs-on:
       group: build-runners
       labels: ubuntu-24.04-16core
@@ -462,7 +78,7 @@ jobs:
           set -e
 
           echo "======================================"
-          echo " GitHub Ubuntu 16-Core Runner"
+          echo " GitHub Ubuntu Runner"
           echo "======================================"
 
           echo "Hostname: $(hostname)"
@@ -472,7 +88,7 @@ jobs:
           echo
 
           echo "CPU:"
-          nproc
+          nproc --all
           echo
 
           echo "Memory:"
@@ -493,6 +109,8 @@ jobs:
 
           echo "Disk before cleanup:"
           df -h
+
+          echo "Removing unnecessary preinstalled software..."
 
           sudo rm -rf /usr/local/lib/android || true
           sudo rm -rf /usr/share/dotnet || true
@@ -559,6 +177,7 @@ jobs:
             zlib1g-dev
 
           git lfs install --skip-repo
+
       # ------------------------------------------------------------
       # REPO TOOL
       # ------------------------------------------------------------
@@ -596,7 +215,6 @@ jobs:
             "${{ github.actor_id }}+${{ github.actor }}@users.noreply.github.com"
 
           git config --global color.ui false
-
           git config --global protocol.version 2
 
           git config --global http.postBuffer 524288000
@@ -690,15 +308,18 @@ jobs:
         run: |
           set -e
 
-          echo "Starting repo sync..."
+          echo "Starting repo sync with all available CPUs..."
 
           repo sync \
+            -c \
             --force-sync \
             --no-clone-bundle \
             --no-tags \
             --optimized-fetch \
             --prune \
-            -j2
+            --retry-fetches=3 \
+            -j"$(nproc --all)"
+
       # ------------------------------------------------------------
       # VERIFY SOURCE
       # ------------------------------------------------------------
@@ -733,7 +354,6 @@ jobs:
           echo "======================================"
 
           source build/envsetup.sh
-
           lunch "${{ inputs.PRODUCT_NAME }}"
 
       # ------------------------------------------------------------
@@ -759,7 +379,7 @@ jobs:
 
       - name: Build ROM
         shell: bash
-        timeout-minutes: 1080
+        timeout-minutes: 360
         env:
           DEVICE_NAME: ${{ inputs.DEVICE_NAME }}
           PRODUCT_NAME: ${{ inputs.PRODUCT_NAME }}
