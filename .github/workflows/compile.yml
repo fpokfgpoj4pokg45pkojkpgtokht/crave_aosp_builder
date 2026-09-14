@@ -396,13 +396,50 @@ jobs:
             android/out/target/product/${{ inputs.DEVICE_NAME }}/*boot*.img
             android/out/target/product/${{ inputs.DEVICE_NAME }}/*vendor*.img
             
+name: Lunaris-AOSP 16.2 - Pixel 7
+
+on:
+  workflow_dispatch:
+    inputs:
+      DEVICE_NAME:
+        description: "Device codename"
+        required: true
+        default: "panther"
+        type: string
+
+      PRODUCT_NAME:
+        description: "Lunch target"
+        required: true
+        default: "lineage_panther-bp4a-user"
+        type: string
+
+      BUILD_COMMAND:
+        description: "Build command"
+        required: true
+        default: "m bacon"
+        type: string
+
+      CLEAN_BUILD:
+        description: "Clean build?"
+        required: true
+        default: "no"
+        type: choice
+        options:
+          - "no"
+          - "yes"
+
+permissions:
+  contents: read
+
 jobs:
   build:
     name: Build Lunaris-AOSP 16.2 - Pixel 7
+
     runs-on:
       group: build-runners
       labels: ubuntu-24.04-16core
-    timeout-minutes: 999999
+
+    timeout-minutes: 360
 
     permissions:
       contents: read
@@ -425,7 +462,7 @@ jobs:
           set -e
 
           echo "======================================"
-          echo " GitHub-hosted Ubuntu runner"
+          echo " GitHub Ubuntu 16-Core Runner"
           echo "======================================"
 
           echo "Hostname: $(hostname)"
@@ -456,8 +493,6 @@ jobs:
 
           echo "Disk before cleanup:"
           df -h
-
-          echo "Removing unnecessary preinstalled software..."
 
           sudo rm -rf /usr/local/lib/android || true
           sudo rm -rf /usr/share/dotnet || true
@@ -524,7 +559,6 @@ jobs:
             zlib1g-dev
 
           git lfs install --skip-repo
-
       # ------------------------------------------------------------
       # REPO TOOL
       # ------------------------------------------------------------
