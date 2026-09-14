@@ -1,628 +1,399 @@
 #
+
 # Copyright (C) 2024-2025 Antonino Scordino
+
 # Copyright (C) 2024-2025 Souhrud Reddy
+
 # Copyright (C) 2026 Customization for Lunaris-AOSP / Pixel 7
+
 #
+
 # SPDX-License-Identifier: Apache-2.0
+
 #
 
 name: Lunaris-AOSP 16.2 - Pixel 7
 
 on:
-  workflow_dispatch:
-    inputs:
+workflow_dispatch:
+inputs:
 
-      DEVICE_NAME:
-        description: "Device codename"
-        required: true
-        default: "panther"
-        type: string
+```
+  DEVICE_NAME:
+    description: "Device codename"
+    required: true
+    default: "panther"
+    type: string
 
-      PRODUCT_NAME:
-        description: "Lunaris lunch target"
-        required: true
-        default: "lineage_panther-bp4a-user"
-        type: string
+  PRODUCT_NAME:
+    description: "Lunaris lunch target"
+    required: true
+    default: "lineage_panther-bp4a-user"
+    type: string
 
-      BUILD_COMMAND:
-        description: "Build command"
-        required: true
-        default: "m bacon"
-        type: string
+  BUILD_COMMAND:
+    description: "Build command"
+    required: true
+    default: "m bacon"
+    type: string
 
-      CLEAN_BUILD:
-        description: "Clean build?"
-        required: true
-        default: "no"
-        type: choice
-        options:
-          - "yes"
-          - "no"
+  CLEAN_BUILD:
+    description: "Clean build?"
+    required: true
+    default: "no"
+    type: choice
+    options:
+      - "yes"
+      - "no"
+```
 
-      PATCH_LIST:
-        description: "Optional patch commands/URLs"
-        required: false
-        default: ""
-        type: string
-
-
-# Required for artifact/release upload.
 permissions:
-  contents: write
-
-
-# ============================================================
-# START CRAVE SELF-HOSTED RUNNER
-# ============================================================
+contents: write
 
 jobs:
 
-  start-runner:
+# ============================================================
 
-    name: Start Crave Self-Hosted Runner
+# BUILD
 
-    runs-on: ubuntu-latest
+# ============================================================
 
-    steps:
+build:
 
-      - name: Checkout repository
-        uses: actions/checkout@v4
-
-      - name: Install tmux
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y tmux
-
-      - name: Check Crave credentials
-        env:
-          CRAVE_USERNAME: ${{ secrets.CRAVE_USERNAME }}
-          CRAVE_TOKEN: ${{ secrets.CRAVE_TOKEN }}
-        run: |
-          set -e
-
-          if [[ -z "$CRAVE_USERNAME" ]]; then
-            echo "::error::CRAVE_USERNAME is missing."
-            exit 1
-          fi
-
-          if [[ -z "$CRAVE_TOKEN" ]]; then
-            echo "::error::CRAVE_TOKEN is missing."
-            exit 1
-          fi
-
-          echo "Crave credentials detected."
-
-      - name: Install Crave client
-        run: |
-          set -e
-
-          mkdir -p "$HOME/bin"
-
-          if command -v crave >/dev/null 2>&1; then
-            echo "Crave is already installed."
-            exit 0
-          fi
-
-          curl -fsSL \
-            https://raw.githubusercontent.com/accupara/crave/master/get_crave.sh \
-            | bash -s --
-
-          mv ./crave "$HOME/bin/crave"
-          chmod +x "$HOME/bin/crave"
-
-          echo "$HOME/bin" >> "$GITHUB_PATH"
-
-      - name: Start runner inside Crave
-        env:
-          CRAVE_USERNAME: ${{ secrets.CRAVE_USERNAME }}
-          CRAVE_TOKEN: ${{ secrets.CRAVE_TOKEN }}
-          CRAVE_FLAGS: ${{ secrets.CRAVE_FLAGS }}
-        run: |
-          set -e
-
-          echo "Starting Crave devspace..."
-
-          if [[ -n "$CRAVE_FLAGS" ]]; then
-            crave $CRAVE_FLAGS devspace -- "
-          else
-            crave devspace -- "
-          fi
-
-            set -e
-
-            echo 'Checking for GitHub Actions runner...'
-
-            if [[ -f actions-runner/run.sh ]]; then
-
-              echo 'GitHub Actions runner found.'
-
-              if tmux has-session -t ghactions 2>/dev/null; then
-                echo 'Existing runner session found. Restarting...'
-                tmux kill-session -t ghactions
-              fi
-
-              tmux new-session -d -s ghactions
-
-              tmux send-keys \
-                -t ghactions \
-                'cd actions-runner && ./run.sh' \
-                Enter
-
-              sleep 5
-
-              echo 'GitHub Actions runner started.'
-
-            else
-
-              echo 'ERROR: actions-runner/run.sh was not found.'
-              echo
-              echo 'The Crave self-hosted runner has not been created yet.'
-              echo 'Run the Create Selfhosted Runner workflow first.'
-
-              exit 1
-
-            fi
-          "
-            # ============================================================
-  # PREPARE
-  # ============================================================
-
-  prepare:
-
-    name: Validate Lunaris Build
-
-    runs-on: ubuntu-latest
-
-    steps:
-
-      - name: Checkout repository
-        uses: actions/checkout@v4
-
-      - name: Validate Pixel 7 configuration
-        env:
-          DEVICE_NAME: ${{ inputs.DEVICE_NAME }}
-          PRODUCT_NAME: ${{ inputs.PRODUCT_NAME }}
-          BUILD_COMMAND: ${{ inputs.BUILD_COMMAND }}
-        run: |
-          set -e
-
-          echo "Device:  $DEVICE_NAME"
-          echo "Product: $PRODUCT_NAME"
-          echo "Build:   $BUILD_COMMAND"
-
-          if [[ "$DEVICE_NAME" != "panther" ]]; then
-            echo "::error::This workflow is configured for Pixel 7 (panther)."
-            exit 1
-          fi
-
-          if [[ "$PRODUCT_NAME" != "lineage_panther-bp4a-user" ]]; then
-            echo "::error::Wrong Pixel 7 lunch target."
-            echo "::error::Expected: lineage_panther-bp4a-user"
-            exit 1
-          fi
-
-          if [[ -z "$BUILD_COMMAND" ]]; then
-            echo "::error::BUILD_COMMAND cannot be empty."
-            exit 1
-          fi
-
-          echo "Configuration looks good."
-
-
-  # ============================================================
-  # ACTUAL BUILD
-  # ============================================================
-
-  build:
-
-    name: Build Lunaris-AOSP 16.2
-
-    needs:
-      - start-runner
-      - prepare
-
-    runs-on: self-hosted
-
-    timeout-minutes: 1440
-
-    concurrency:
-      group: lunaris-panther
-      cancel-in-progress: false
-
-    env:
-
-      DEVICE_NAME: ${{ inputs.DEVICE_NAME }}
-
-      PRODUCT_NAME: ${{ inputs.PRODUCT_NAME }}
-
-      BUILD_COMMAND: ${{ inputs.BUILD_COMMAND }}
-
-      CLEAN_BUILD: ${{ inputs.CLEAN_BUILD }}
-
-      PATCH_LIST: ${{ inputs.PATCH_LIST }}
-
-      PROJECTFOLDER: /crave-devspaces/LunarisAOSP16
-
-    steps:
-
-      # --------------------------------------------------------
-      # VERIFY RUNNER
-      # --------------------------------------------------------
-
-      - name: Verify Crave runner
-        run: |
-          set -e
-
-          echo "Hostname:"
-          hostname
-
-          echo
-          echo "DCDEVSPACE:"
-          echo "${DCDEVSPACE:-not-set}"
-
-          if [[ "${DCDEVSPACE:-0}" != *1* ]]; then
-            echo "::error::This job is not running inside a Crave devspace."
-            exit 1
-          fi
-
-          echo
-          echo "Crave devspace confirmed."
-
-
-      # --------------------------------------------------------
-      # CHECK TOOLS
-      # --------------------------------------------------------
-
-      - name: Check required tools
-        run: |
-          set -e
-
-          command -v crave || {
-            echo "::error::Crave command not found."
-            exit 1
-          }
-
-          command -v repo || {
-            echo "::error::repo command not found."
-            exit 1
-          }
-
-          command -v git || {
-            echo "::error::git command not found."
-            exit 1
-          }
-
-          command -v jq || {
-            echo "::error::jq command not found."
-            exit 1
-          }
-
-          echo "All required tools found."
-
-
-      # --------------------------------------------------------
-      # GIT CONFIG
-      # --------------------------------------------------------
-
-      - name: Configure git
-        run: |
-          git config --global user.name "${GITHUB_ACTOR}"
-
-          git config --global user.email \
-            "${GITHUB_ACTOR_ID}+${GITHUB_ACTOR}@users.noreply.github.com"
-
-
-      # --------------------------------------------------------
-      # CREATE CRAVE PROJECT
-      # --------------------------------------------------------
-
-      - name: Create Lunaris Crave project
-        env:
-          CRAVE_USERNAME: ${{ secrets.CRAVE_USERNAME }}
-          CRAVE_TOKEN: ${{ secrets.CRAVE_TOKEN }}
-        run: |
-
-          set -e
-
-          mkdir -p "$PROJECTFOLDER"
-
-          echo "Project folder:"
-          echo "$PROJECTFOLDER"
-
-          echo
-          echo "Checking existing Crave clones..."
-
-          if crave clone list --json \
-            | jq -e \
-              --arg PROJECT "$PROJECTFOLDER" \
-              '.clones[]? | .["Cloned At"] == $PROJECT' \
-              >/dev/null 2>&1
-          then
-
-            echo "Existing Lunaris clone found."
-
-          else
-
-            echo "Creating Lunaris Crave clone..."
-
-            crave clone create \
-              --projectID 35 \
-              "$PROJECTFOLDER"
-
-          fi
-
-
-      # --------------------------------------------------------
-      # REPO INIT
-      # --------------------------------------------------------
-
-      - name: Initialize Lunaris-AOSP 16.2
-        working-directory: /crave-devspaces/LunarisAOSP16
-        run: |
-
-          set -e
-
-          if [[ ! -d ".repo" ]]; then
-
-            echo "Initializing Lunaris-AOSP 16.2..."
-
-            repo init \
-              -u https://github.com/Lunaris-AOSP/android.git \
-              -b 16.2 \
-              --git-lfs
-
-          else
-
-            echo ".repo already exists."
-
-          fi
-
-
-      # --------------------------------------------------------
-      # PIXEL 7 MANIFEST
-      # --------------------------------------------------------
-
-      - name: Install Pixel 7 manifest
-        working-directory: /crave-devspaces/LunarisAOSP16
-        run: |
-
-          set -e
-
-          mkdir -p .repo/local_manifests
-
-          cat > .repo/local_manifests/pixel7.xml <<'EOF'
-
-<?xml version="1.0" encoding="UTF-8"?>
-
-<manifest>
-
-  <!--
-    Pixel 7 / panther
-
-    Device tree:
-    device/google/pantah
-  -->
-
-  <project
-    name="LineageOS/android_device_google_panther"
-    path="device/google/pantah"
-    revision="lineage-23.2"
-    clone-depth="1" />
-
-</manifest>
-
-EOF
-
-          echo
-          echo "Pixel 7 manifest:"
-          cat .repo/local_manifests/pixel7.xml
-
-
-      # --------------------------------------------------------
-      # SYNC
-      # --------------------------------------------------------
-
-      - name: Sync Lunaris sources
-        working-directory: /crave-devspaces/LunarisAOSP16
-        run: |
-
-          set -e
-
-          echo "Starting repository sync..."
-
-          repo sync \
-            -c \
-            -j"$(nproc --all)" \
-            --force-sync \
-            --no-clone-bundle \
-            --no-tags
-
-
-      # --------------------------------------------------------
-      # OPTIONAL PATCHES
-      # --------------------------------------------------------
-
-      - name: Apply optional patches
-        if: ${{ inputs.PATCH_LIST != '' }}
-        working-directory: /crave-devspaces/LunarisAOSP16
-        env:
-          PATCH_LIST: ${{ inputs.PATCH_LIST }}
-        run: |
-
-          set -e
-
-          echo "Patch list supplied."
-
-          for PATCH in $PATCH_LIST; do
-
-            echo
-            echo "Processing:"
-            echo "$PATCH"
-
-            if [[ "$PATCH" =~ ^https?:// ]]; then
-
-              echo "Downloading patch/script..."
-
-              curl -fsSL "$PATCH" -o /tmp/lunaris_patch.sh
-
-              chmod +x /tmp/lunaris_patch.sh
-
-              /tmp/lunaris_patch.sh
-
-            else
-
-              echo "Running patch command:"
-              echo "$PATCH"
-
-              bash -c "$PATCH"
-
-            fi
-
-          done
-
-
-      # --------------------------------------------------------
-      # BUILD
-      # --------------------------------------------------------
-
-      - name: Build Lunaris-AOSP
-        working-directory: /crave-devspaces/LunarisAOSP16
-        env:
-          CRAVE_USERNAME: ${{ secrets.CRAVE_USERNAME }}
-          CRAVE_TOKEN: ${{ secrets.CRAVE_TOKEN }}
-          CRAVE_FLAGS: ${{ secrets.CRAVE_FLAGS }}
-        run: |
-
-          set -e
-
-          if [[ "$CLEAN_BUILD" == "yes" ]]; then
-            CLEAN="--clean"
-          else
-            CLEAN=""
-          fi
-
-          echo
-          echo "========================================"
-          echo " Lunaris-AOSP 16.2"
-          echo " Pixel 7 / panther"
-          echo "========================================"
-          echo
-          echo "Product:"
-          echo "$PRODUCT_NAME"
-          echo
-          echo "Build command:"
-          echo "$BUILD_COMMAND"
-          echo
-          echo "Clean:"
-          echo "$CLEAN_BUILD"
-          echo
-
-          echo "Starting Crave build..."
-
-          if [[ -n "$CRAVE_FLAGS" ]]; then
-
-            crave $CRAVE_FLAGS run \
-              --no-patch \
-              $CLEAN \
-              -- "
-
-                set -e
-
-                cd /crave-devspaces/LunarisAOSP16
-
-                if [ -x /opt/crave/resync.sh ]; then
-                  /opt/crave/resync.sh
-                fi
-
-                source build/envsetup.sh
-
-                lunch ${PRODUCT_NAME}
-
-                make installclean
-
-                ${BUILD_COMMAND}
-
-              "
-
-          else
-
-            crave run \
-              --no-patch \
-              $CLEAN \
-              -- "
-
-                set -e
-
-                cd /crave-devspaces/LunarisAOSP16
-
-                if [ -x /opt/crave/resync.sh ]; then
-                  /opt/crave/resync.sh
-                fi
-
-                source build/envsetup.sh
-
-                lunch ${PRODUCT_NAME}
-
-                make installclean
-
-                ${BUILD_COMMAND}
-
-              "
-
-          fi
-
-
-      # --------------------------------------------------------
-      # ARTIFACT UPLOAD
-      # --------------------------------------------------------
-
-      - name: Upload build artifacts
-        if: success()
-        continue-on-error: true
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          GH_UPLOAD_LIMIT: ${{ secrets.GH_UPLOAD_LIMIT }}
-          EXTRA_FILES: ${{ secrets.EXTRA_FILES }}
-        working-directory: /crave-devspaces/LunarisAOSP16
-        run: |
-
-          set -e
-
-          echo "Preparing artifact upload..."
-
-          printf '%s\n' "$GH_TOKEN" > token.txt
-
-          REMOTE_DIR="$(
-            crave ssh -- pwd \
-            | grep -v Select \
-            | tr -d '\r'
-          )"
-
-          crave push \
-            token.txt \
-            -d "$REMOTE_DIR/"
-
-          crave ssh -- "
-            export GH_UPLOAD_LIMIT='$GH_UPLOAD_LIMIT'
-
-            bash /opt/crave/github-actions/upload.sh \
-              '${GITHUB_RUN_ID}' \
-              '${DEVICE_NAME}' \
-              '${GITHUB_REPOSITORY}' \
-              '${PRODUCT_NAME}-${GITHUB_RUN_ID}' \
-              '${EXTRA_FILES}'
-          "
-
-
-      # --------------------------------------------------------
-      # CLEANUP ON CANCEL
-      # --------------------------------------------------------
-
-      - name: Stop Crave jobs
-        if: cancelled()
-        working-directory: /crave-devspaces/LunarisAOSP16
-        run: |
-
-          crave stop --all
-
-          
+```
+name: Build Lunaris-AOSP 16.2
+
+runs-on: ubuntu-latest
+
+timeout-minutes: 1440
+
+concurrency:
+  group: lunaris-panther
+  cancel-in-progress: false
+
+env:
+  DEVICE_NAME: ${{ inputs.DEVICE_NAME }}
+  PRODUCT_NAME: ${{ inputs.PRODUCT_NAME }}
+  BUILD_COMMAND: ${{ inputs.BUILD_COMMAND }}
+  CLEAN_BUILD: ${{ inputs.CLEAN_BUILD }}
+
+steps:
+
+  # ---------------------------------------------------------
+  # CHECKOUT
+  # ---------------------------------------------------------
+
+  - name: Checkout repository
+    uses: actions/checkout@v4
+
+  # ---------------------------------------------------------
+  # VALIDATE CONFIGURATION
+  # ---------------------------------------------------------
+
+  - name: Validate Pixel 7 configuration
+    shell: bash
+    run: |
+      set -e
+
+      echo "Device:  $DEVICE_NAME"
+      echo "Product: $PRODUCT_NAME"
+      echo "Build:   $BUILD_COMMAND"
+      echo "Clean:   $CLEAN_BUILD"
+
+      if [[ "$DEVICE_NAME" != "panther" ]]; then
+        echo "::error::This workflow is configured for Pixel 7 (panther)."
+        exit 1
+      fi
+
+      if [[ "$PRODUCT_NAME" != "lineage_panther-bp4a-user" ]]; then
+        echo "::error::Wrong Pixel 7 lunch target."
+        echo "::error::Expected: lineage_panther-bp4a-user"
+        exit 1
+      fi
+
+      if [[ -z "$BUILD_COMMAND" ]]; then
+        echo "::error::BUILD_COMMAND cannot be empty."
+        exit 1
+      fi
+
+      echo "Configuration looks good."
+
+  # ---------------------------------------------------------
+  # FREE DISK SPACE
+  # ---------------------------------------------------------
+
+  - name: Free disk space
+    shell: bash
+    run: |
+      set -eux
+
+      sudo rm -rf /usr/local/lib/android
+      sudo rm -rf /usr/share/dotnet
+      sudo rm -rf /opt/ghc
+      sudo rm -rf /usr/local/share/powershell
+      sudo rm -rf /usr/local/share/chromium
+      sudo rm -rf /usr/local/lib/node_modules
+
+      sudo docker system prune -af || true
+
+      df -h
+
+  # ---------------------------------------------------------
+  # INSTALL ANDROID DEPENDENCIES
+  # ---------------------------------------------------------
+
+  - name: Install Android build dependencies
+    shell: bash
+    run: |
+      set -eux
+
+      sudo apt-get update
+
+      sudo apt-get install -y \
+        adb \
+        bc \
+        bison \
+        build-essential \
+        ccache \
+        curl \
+        flex \
+        g++-multilib \
+        gcc-multilib \
+        git \
+        git-lfs \
+        gnupg \
+        gperf \
+        imagemagick \
+        lib32ncurses-dev \
+        lib32readline-dev \
+        lib32z1-dev \
+        libelf-dev \
+        liblz4-tool \
+        libncurses5-dev \
+        libncurses-dev \
+        libssl-dev \
+        libxml2-utils \
+        lzop \
+        openjdk-17-jdk \
+        pngcrush \
+        rsync \
+        schedtool \
+        squashfs-tools \
+        unzip \
+        xsltproc \
+        zip \
+        zlib1g-dev
+
+      git lfs install
+
+  # ---------------------------------------------------------
+  # INSTALL REPO
+  # ---------------------------------------------------------
+
+  - name: Install repo
+    shell: bash
+    run: |
+      set -eux
+
+      mkdir -p "${HOME}/bin"
+
+      curl -fsSL \
+        https://storage.googleapis.com/git-repo-downloads/repo \
+        -o "${HOME}/bin/repo"
+
+      chmod +x "${HOME}/bin/repo"
+
+      echo "${HOME}/bin" >> "${GITHUB_PATH}"
+
+  # ---------------------------------------------------------
+  # CONFIGURE GIT
+  # ---------------------------------------------------------
+
+  - name: Configure Git
+    shell: bash
+    run: |
+      set -eux
+
+      git config --global user.name "GitHub Actions"
+      git config --global user.email "actions@github.com"
+
+  # ---------------------------------------------------------
+  # INITIALIZE LUNARIS-AOSP
+  # ---------------------------------------------------------
+
+  - name: Initialize Lunaris-AOSP 16.2
+    shell: bash
+    run: |
+      set -eux
+
+      mkdir -p "${GITHUB_WORKSPACE}/android"
+
+      cd "${GITHUB_WORKSPACE}/android"
+
+      repo init \
+        -u https://github.com/Lunaris-AOSP/android.git \
+        -b 16.2 \
+        --git-lfs
+
+  # ---------------------------------------------------------
+  # PIXEL 7 LOCAL MANIFEST
+  # ---------------------------------------------------------
+
+  - name: Create Pixel 7 local manifest
+    shell: bash
+    working-directory: android
+    run: |
+      set -eux
+
+      mkdir -p .repo/local_manifests
+
+      cat > .repo/local_manifests/pixel7.xml <<'EOF'
+      <?xml version="1.0" encoding="UTF-8"?>
+      <manifest>
+
+        <!-- Pixel 7 / panther -->
+
+        <project
+          name="LineageOS/android_device_google_panther"
+          path="device/google/pantah"
+          revision="lineage-23.2"
+          clone-depth="1" />
+
+        <project
+          name="LineageOS/android_device_google_gs201"
+          path="device/google/gs201"
+          revision="lineage-23.2"
+          clone-depth="1" />
+
+        <project
+          name="LineageOS/android_kernel_google_gs201"
+          path="kernel/google/gs201"
+          revision="lineage-23.2"
+          clone-depth="1" />
+
+        <project
+          name="TheMuppets/proprietary_vendor_google_panther"
+          path="vendor/google/panther"
+          revision="lineage-23.2"
+          clone-depth="1" />
+
+      </manifest>
+      EOF
+
+      echo "Pixel 7 manifest:"
+      cat .repo/local_manifests/pixel7.xml
+
+  # ---------------------------------------------------------
+  # SYNC SOURCE
+  # ---------------------------------------------------------
+
+  - name: Sync Lunaris sources
+    working-directory: android
+    shell: bash
+    run: |
+      set -eux
+
+      echo "Starting repository sync..."
+
+      repo sync \
+        --force-sync \
+        --no-clone-bundle \
+        --no-tags \
+        --optimized-fetch \
+        --prune \
+        -j2
+
+  # ---------------------------------------------------------
+  # SETUP BUILD ENVIRONMENT
+  # ---------------------------------------------------------
+
+  - name: Setup build environment
+    working-directory: android
+    shell: bash
+    run: |
+      set -eux
+
+      source build/envsetup.sh
+
+      lunch "${PRODUCT_NAME}"
+
+  # ---------------------------------------------------------
+  # CLEAN BUILD
+  # ---------------------------------------------------------
+
+  - name: Clean build
+    if: ${{ inputs.CLEAN_BUILD == 'yes' }}
+    working-directory: android
+    shell: bash
+    run: |
+      set -eux
+
+      source build/envsetup.sh
+
+      lunch "${PRODUCT_NAME}"
+
+      make clean
+
+  # ---------------------------------------------------------
+  # BUILD
+  # ---------------------------------------------------------
+
+  - name: Build Lunaris-AOSP
+    working-directory: android
+    shell: bash
+    run: |
+      set -eux
+
+      source build/envsetup.sh
+
+      lunch "${PRODUCT_NAME}"
+
+      echo
+      echo "========================================"
+      echo " Lunaris-AOSP 16.2"
+      echo " Pixel 7 / panther"
+      echo "========================================"
+      echo
+      echo "Product:"
+      echo "${PRODUCT_NAME}"
+      echo
+      echo "Build command:"
+      echo "${BUILD_COMMAND}"
+      echo
+
+      ${BUILD_COMMAND}
+
+  # ---------------------------------------------------------
+  # SHOW OUTPUT
+  # ---------------------------------------------------------
+
+  - name: List build output
+    if: always()
+    working-directory: android
+    shell: bash
+    run: |
+      echo "Build output:"
+
+      find "out/target/product/${DEVICE_NAME}" \
+        -maxdepth 1 \
+        -type f \
+        -printf '%f\n' \
+        2>/dev/null || true
+
+  # ---------------------------------------------------------
+  # UPLOAD ARTIFACTS
+  # ---------------------------------------------------------
+
+  - name: Upload ROM artifacts
+    if: success()
+    uses: actions/upload-artifact@v4
+    with:
+      name: lunaris-${{ inputs.DEVICE_NAME }}
+      path: |
+        android/out/target/product/${{ inputs.DEVICE_NAME }}/*.zip
+        android/out/target/product/${{ inputs.DEVICE_NAME }}/*.img
+        android/out/target/product/${{ inputs.DEVICE_NAME }}/*boot*.img
+        android/out/target/product/${{ inputs.DEVICE_NAME }}/*vendor*.img
+      if-no-files-found: warn
+      retention-days: 7
+```
