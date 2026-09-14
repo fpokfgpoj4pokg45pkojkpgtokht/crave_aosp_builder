@@ -1,31 +1,62 @@
-#
 # Copyright (C) 2024-2025 Antonino Scordino
 # Copyright (C) 2024-2025 Souhrud Reddy
+# Copyright (C) 2026 AI Generated Customization for Pantah (Lunaris-AOSP Base)
 #
 # SPDX-License-Identifier: Apache-2.0
-#
 
-name: Start/Restart Selfhosted Runner
+name: Crave Lunaris Pixel 7 Builder (Self-hosted)
 on:
   workflow_dispatch:
+    inputs:
+      BASE_PROJECT:
+        description: 'Choose a base project (Mapped for initialization):'
+        required: true
+        default: 'Lunaris-AOSP 16.2'
+        type: choice
+        options:
+          - 'Lunaris-AOSP 16.2'
+      DEVICE_NAME:
+        description: "Device's codename:"
+        required: true
+        default: "panther"
+      PRODUCT_NAME:
+        description: "Product to build (codename-bp4a-user/userdebug):"
+        required: true
+        default: "panther-bp4a-userdebug"
+      PATCH_LIST:
+        description: "Space-separated Gerrit Change IDs or patch script URLs (Leave empty if none):"
+        required: false
+        default: ""
+      BUILD_COMMAND:
+        description: 'Command to be used for compiling:'
+        required: true
+        default: 'm bacon'
+      CLEAN_BUILD:
+        description: 'Build with a clean workspace?'
+        required: true
+        default: 'no'
+        type: choice
+        options: 
+          - 'yes'
+          - 'no'
 
 jobs:
-  run-devspace-and-tmux:
+  Start-Runner:
     runs-on: ubuntu-latest
-
     steps:
     - name: Checkout code
       uses: actions/checkout@v4
 
-      # Install 'tmux'
     - name: Set up environment
       run: |
         sudo apt-get update
         sudo apt-get install -y tmux
 
+
       # Download and configure 'crave'.
     - name: Configure the 'crave' environment
       run: |
+        echo "DCDEVSPACE status: ${DCDEVSPACE}"
         if [[ $DCDEVSPACE == *1* ]]; then
         echo 'No need to set up crave, we are already running in devspace!'
         else
@@ -34,6 +65,205 @@ jobs:
           mv ${PWD}/crave ${HOME}/bin/
           sudo ln -sf /home/${USER}/bin/crave /usr/bin/crave
           envsubst < ${PWD}/crave.conf.sample >> ${PWD}/crave.conf
+          rm -rf ${PWD}/crave.conf.sample          
+        fi
+      env:
+        CRAVE_USERNAME: ${{  secrets.CRAVE_USERNAME  }}
+        CRAVE_TOKEN: ${{  secrets.CRAVE_TOKEN  }}
+
+    - name: Run crave devspace
+      run: |
+        crave ${{ secrets.CRAVE_FLAGS }} devspace -- "echo 'Looking for runner...'
+          if [ -f actions-runner/run.sh ] ; then
+            echo 'Runner found! Restarting it...'
+          else
+            echo 'Error! Runner not found!'
+            exit 1
+          fi
+
+        if tmux has-session -t ghactions; then 
+          echo 'Runner is already Running' 
+        else 
+          tmux kill-session -t ghactions;
+          tmux new-session -d -s ghactions 
+          tmux send-keys -t ghactions './actions-runner/run.sh' Enter 
+          echo 'Runner Started'
+        fi "
+
+  prepare:
+    name: Prepare for Building
+    runs-on: ubuntu-latest
+    steps:
+    - name: Check-out to repository
+      uses: actions/checkout@v4
+
+    - name: Check Credentials
+      run: |
+        if [[ -z "${{ secrets.CRAVE_TOKEN }}" || -z "${{ secrets.CRAVE_USERNAME }}" ]]; then
+          echo "Crave Credentials Not Configured! Exiting..."
+          exit 1
+        fi
+
+    - name: Set Project variables
+      id: proj-variables
+      run: |
+        # Initializing workspace with Lunaris-AOSP source structure manifest
+        export PROJECTFOLDER="/crave-devspaces/LunarisAOSP"
+        export PROJECTID="35" # Uses generic AOSP platform sandbox
+        export REPO_INIT="repo init -u https://github.com -b 16.2 --git-lfs"
+
+        LUNCH="lunch ${{ github.event.inputs.PRODUCT_NAME }}"
+
+        # Inlining local manifest for your target device and custom elements
+        LOCAL_MANIFEST="mkdir -p .repo/local_manifests && cat << 'EOF' > .repo/local_manifests/pantah.xml
+        <?xml version=\"1.0\" encoding=\"UTF-8\"?>
+        <manifest>
+          <!-- Pixel 7 Family Device Tree -->
+          <project name=\"LineageOS/android_device_google_pantah\" path=\"device/google/pantah\" remote=\"github\" revision=\"lineage-21.0\" />
+          
+          <!-- Tensor GS201 Sultan Kernel Tree -->
+          <project name=\"kerneltoast/android_kernel_google_gs201\" path=\"kernel/google/gs201\" remote=\"github\" revision=\"16.0.0-sultan\" />
+          
+          <!-- Vendor Blobs from TheMuppets -->
+          <project name=\"TheMuppets/proprietary_vendor_google_panther\" path=\"vendor/google/panther\" remote=\"github\" revision=\"lineage-21.0\" />
+        </manifest>
+        EOF"
+
+        echo "PROJECTFOLDER=$PROJECTFOLDER" >> "$GITHUB_OUTPUT"
+        echo "PROJECTID=$PROJECTID"  >> "$GITHUB_OUTPUT"
+        echo "REPO_INIT=$REPO_INIT" >> "$GITHUB_OUTPUT"
+        echo "LUNCH=$LUNCH" >> "$GITHUB_ENV"
+        echo "LUNCH=$LUNCH" >> "$GITHUB_OUTPUT"
+        echo "LOCAL_MANIFEST=$LOCAL_MANIFEST" >> "$GITHUB_ENV"
+        echo "LOCAL_MANIFEST=$LOCAL_MANIFEST" >> "$GITHUB_OUTPUT"
+    outputs:
+      PROJECTFOLDER: ${{ steps.proj-variables.outputs.PROJECTFOLDER }}
+      PROJECTID: ${{ steps.proj-variables.outputs.PROJECTID }}
+      REPO_INIT: ${{ steps.proj-variables.outputs.REPO_INIT }}
+      LUNCH: ${{ steps.proj-variables.outputs.LUNCH }}
+      LOCAL_MANIFEST: ${{ steps.proj-variables.outputs.LOCAL_MANIFEST }}
+
+  build:
+    timeout-minutes: 1440
+    name: Build using foss.crave.io
+    needs: prepare
+    runs-on: self-hosted
+    concurrency:
+      group: ${{ github.repository_owner }}
+    steps:
+    - name: Set Repo Project
+      run: |
+        echo "PROJECTFOLDER=${{ needs.prepare.outputs.PROJECTFOLDER }}" >> "$GITHUB_ENV"
+        echo "PROJECTID=${{ needs.prepare.outputs.PROJECTID }}"  >> "$GITHUB_ENV"
+        echo "REPO_INIT=${{ needs.prepare.outputs.REPO_INIT }}" >> "$GITHUB_ENV"
+        echo "LUNCH=${{ needs.prepare.outputs.LUNCH }}" >> "$GITHUB_ENV"
+        echo "LOCAL_MANIFEST=${{ needs.prepare.outputs.LOCAL_MANIFEST }}" >> "$GITHUB_ENV"
+
+    - name: Telegram Notification
+      continue-on-error: true
+      run: |
+        send_telegram_message() {
+          curl -s -X POST https://telegram.org \
+          -d chat_id=$chatId -d text="$1" -d parse_mode="Markdown"
+        }
+        send_telegram_message "Crave Lunaris-AOSP Build has been queued for Pixel 7."
+      env:
+        chatId: ${{ secrets.TELEGRAM_TO }}
+        botToken: ${{ secrets.TELEGRAM_TOKEN }}
+
+    - name: Cleanup Workspace
+      run: rm -rf *
+
+    - name: Create Project Folders
+      run: |
+        if [[ $DCDEVSPACE != *1* ]]; then
+          mkdir -p devspace
+          sudo mkdir -p /crave-devspaces
+          sudo ln -sf ${pwd}/devspace /crave-devspaces
+          sudo chmod 777 /crave-devspaces
+        fi
+        if grep -q "$PROJECTFOLDER" <(crave clone list --json | jq -r '.clones[]."Cloned At"') || [[ "${DCDEVSPACE}" == "1" ]]; then
+          crave clone destroy -y $PROJECTFOLDER || echo "Error removing clone"
+        fi
+        if [[ $DCDEVSPACE == *1* ]]; then
+          crave clone create --projectID $PROJECTID $PROJECTFOLDER || echo "Crave clone create failed!"
+        else
+          mkdir -p $PROJECTFOLDER
+        fi
+
+    - name: Check-out to repository
+      uses: actions/checkout@v4
+
+    - name: Configure the 'crave' environment configs
+      run: |
+        mkdir -p $PROJECTFOLDER/.repo/manifests
+        if [[ $DCDEVSPACE != *1* ]]; then
+          curl -s https://raw.githubusercontent.com/accupara/crave/master/get_crave.sh | bash -s --
+          mv ${PWD}/crave ${HOME}/bin/
+          sudo ln -sf /home/${USER}/bin/crave /usr/bin/crave
+          envsubst < ${PWD}/crave.conf.sample >> ${PWD}/crave.conf
+          rm -rf ${PWD}/crave.conf.sample       
+          cp crave.conf $PROJECTFOLDER 
+        fi
+        cp configs/crave/crave.yaml.aosp $PROJECTFOLDER/.repo/manifests/crave.yaml || touch $PROJECTFOLDER/.repo/manifests/crave.yaml
+      env:
+        CRAVE_USERNAME: ${{ secrets.CRAVE_USERNAME }}
+        CRAVE_TOKEN: ${{ secrets.CRAVE_TOKEN }}
+
+    - name: Set the 'crave' project
+      run: |
+        cd $PROJECTFOLDER
+        if ! grep -q "$PROJECTFOLDER" <(crave clone list --json | jq -r '.clones[]."Cloned At"') && [[ "${DCDEVSPACE}" != "1" ]]; then
+          $REPO_INIT
+        fi
+
+    - name: Start compilation through 'crave'
+      run: |
+        cd $PROJECTFOLDER
+        jq '.projects = []' ~/crave.conf > tmp && mv tmp ~/crave.conf
+        
+        if [ "${{ github.event.inputs.CLEAN_BUILD }}" == "yes" ]; then
+           export CLEAN="--clean"
+        fi
+        if [[ -n "${{ secrets.PAID }}" ]]; then
+           export PAID="--platform aosp-silver"
+        fi
+
+        crave ${{ secrets.CRAVE_FLAGS }} run --no-patch ${PAID} ${CLEAN} -- "rm -rf .repo/local_manifests/* && \
+        $REPO_INIT && \
+        $LOCAL_MANIFEST && \
+        repo sync -c -j\$(nproc --all) --force-sync --no-clone-bundle --no-tags && \
+        export BUILD_USERNAME=${{ github.actor }} ; \
+        export BUILD_HOSTNAME=crave ; \
+        . b*/env* && \
+        \
+        # Patches Processing Engine \
+        if [ -n \"${{ github.event.inputs.PATCH_LIST }}\" ]; then \
+          for patch in ${{ github.event.inputs.PATCH_LIST }}; do \
+            if [[ \$patch =~ ^http ]]; then \
+               curl -sL \"\$patch\" | bash || echo 'Patch script failed!' ; \
+            else \
+               repopick \$patch || echo 'Repopick failed!' ; \
+            fi \
+          done \
+        fi && \
+        \
+        $LUNCH && \
+        make installclean && \
+        ${{ github.event.inputs.BUILD_COMMAND }}"
+
+    - name: Telegram Notification (Success)
+      if: ${{ success() }}
+      continue-on-error: true
+      run: |
+        curl -s -X POST https://telegram.org \
+        -d chat_id=$chatId -d text="Lunaris Pixel 7 Build Succeeded!"
+      env:
+        chatId: ${{ secrets.TELEGRAM_TO }}
+        botToken: ${{ secrets.TELEGRAM_TOKEN }}
+
+    - name: Telegram Notification (Fail)
+      if: ${{ cancelled() || failure() }}
           rm -rf ${PWD}/crave.conf.sample          
         fi
       env:
