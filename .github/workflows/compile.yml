@@ -398,7 +398,8 @@ jobs:
             android/out/target/product/${{ inputs.DEVICE_NAME }}/*.zip
             android/out/target/product/${{ inputs.DEVICE_NAME }}/*.img
             android/out/target/product/${{ inputs.DEVICE_NAME }}/*boot*.img
-            android/out/target/product/${{ inputs.DEVICE_NAME }}/*vendor*.img        options:
+            
+            options:
           - "yes"
           - "no"
 
