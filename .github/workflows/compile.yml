@@ -51,7 +51,7 @@ jobs:
 
     # Requires a configured GitHub larger runner in the "build-runners"
     # group with the "ubuntu-24.04-16core" label.
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-24.04-16core
     timeout-minutes: 700
 
     permissions:
