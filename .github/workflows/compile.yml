@@ -241,39 +241,39 @@ jobs:
           mkdir -p .repo/local_manifests
 
           cat > .repo/local_manifests/pixel7.xml <<'EOF'
-<?xml version="1.0" encoding="UTF-8"?>
-<manifest>
+          <?xml version="1.0" encoding="UTF-8"?>
+          <manifest>
 
-  <!-- Pixel 7 -->
-  <project
-    name="LineageOS/android_device_google_panther"
-    path="device/google/pantah"
-    revision="lineage-23.2"
-    clone-depth="1" />
+            <!-- Pixel 7 -->
+            <project
+              name="LineageOS/android_device_google_panther"
+              path="device/google/pantah"
+              revision="lineage-23.2"
+              clone-depth="1" />
 
-  <!-- Google GS201 common device tree -->
-  <project
-    name="LineageOS/android_device_google_gs201"
-    path="device/google/gs201"
-    revision="lineage-23.2"
-    clone-depth="1" />
+            <!-- Google GS201 common device tree -->
+            <project
+              name="LineageOS/android_device_google_gs201"
+              path="device/google/gs201"
+              revision="lineage-23.2"
+              clone-depth="1" />
 
-  <!-- Google GS201 kernel -->
-  <project
-    name="LineageOS/android_kernel_google_gs201"
-    path="kernel/google/gs201"
-    revision="lineage-23.2"
-    clone-depth="1" />
+            <!-- Google GS201 kernel -->
+            <project
+              name="LineageOS/android_kernel_google_gs201"
+              path="kernel/google/gs201"
+              revision="lineage-23.2"
+              clone-depth="1" />
 
-  <!-- Pixel 7 proprietary vendor files -->
-  <project
-    name="TheMuppets/proprietary_vendor_google_panther"
-    path="vendor/google/panther"
-    revision="lineage-23.2"
-    clone-depth="1" />
+            <!-- Pixel 7 proprietary vendor files -->
+            <project
+              name="TheMuppets/proprietary_vendor_google_panther"
+              path="vendor/google/panther"
+              revision="lineage-23.2"
+              clone-depth="1" />
 
-</manifest>
-EOF
+          </manifest>
+          EOF
 
           echo "Pixel 7 manifest:"
           cat .repo/local_manifests/pixel7.xml
