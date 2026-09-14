@@ -399,10 +399,6 @@ jobs:
             android/out/target/product/${{ inputs.DEVICE_NAME }}/*.img
             android/out/target/product/${{ inputs.DEVICE_NAME }}/*boot*.img
             
-            options:
-          - "yes"
-          - "no"
-
 jobs:
   build:
     name: Build Lunaris-AOSP 16.2 - Pixel 7
