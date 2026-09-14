@@ -252,24 +252,6 @@ jobs:
         make installclean && \
         ${{ github.event.inputs.BUILD_COMMAND }}"
 
-    - name: Telegram Notification (Success)
-      if: ${{ success() }}
-      continue-on-error: true
-      run: |
-        curl -s -X POST https://telegram.org \
-        -d chat_id=$chatId -d text="Lunaris Pixel 7 Build Succeeded!"
-      env:
-        chatId: ${{ secrets.TELEGRAM_TO }}
-        botToken: ${{ secrets.TELEGRAM_TOKEN }}
-
-    - name: Telegram Notification (Fail)
-      if: ${{ cancelled() || failure() }}
-          rm -rf ${PWD}/crave.conf.sample          
-        fi
-      env:
-        CRAVE_USERNAME: ${{  secrets.CRAVE_USERNAME  }}
-        CRAVE_TOKEN: ${{  secrets.CRAVE_TOKEN  }}
-
       # Start 'runner' in 'tmux'.
     - name: Run crave devspace
       run: |
