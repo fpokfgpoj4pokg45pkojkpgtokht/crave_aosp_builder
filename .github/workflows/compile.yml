@@ -241,6 +241,7 @@ jobs:
           mkdir -p .repo/local_manifests
 
           cat > .repo/local_manifests/pixel7.xml << 'EOF'
+
 <?xml version="1.0" encoding="UTF-8"?>
 <manifest>
 
