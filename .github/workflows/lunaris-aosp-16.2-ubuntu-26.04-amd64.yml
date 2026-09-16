@@ -1,0 +1,635 @@
+#
+# Copyright (C) 2024-2025 Antonino Scordino
+# Copyright (C) 2024-2025 Souhrud Reddy
+# Copyright (C) 2026 Customization for Lunaris-AOSP / Pixel 7
+#
+# SPDX-License-Identifier: Apache-2.0
+#
+
+name: Lunaris-AOSP 16.2 - Pixel 7 Fast Build
+
+on:
+  workflow_dispatch:
+    inputs:
+      DEVICE_NAME:
+        description: "Device codename"
+        required: true
+        default: "panther"
+        type: string
+
+      PRODUCT_NAME:
+        description: "Lunch target"
+        required: true
+        default: "lineage_panther-bp4a-user"
+        type: string
+
+      BUILD_COMMAND:
+        description: "Build command"
+        required: true
+        default: "m bacon"
+        type: string
+
+      CLEAN_BUILD:
+        description: "Clean build? Warning: this is slower."
+        required: true
+        default: "no"
+        type: choice
+        options:
+          - "no"
+          - "yes"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: lunaris-panther-build
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: Build Lunaris-AOSP 16.2 - Pixel 7
+
+    # Ubuntu 26.04 AMD64 self-hosted runner
+    runs-on: [self-hosted, linux, AMD64]
+
+    timeout-minutes: 1800
+
+    permissions:
+      contents: read
+
+    steps:
+
+      # ============================================================
+      # CHECKOUT
+      # ============================================================
+
+      - name: Checkout workflow repository
+        uses: actions/checkout@v4
+
+      # ============================================================
+      # RUNNER INFORMATION
+      # ============================================================
+
+      - name: Show runner information
+        shell: bash
+        run: |
+          set -e
+
+          echo "=============================================="
+          echo " Lunaris-AOSP AMD64 Build Runner"
+          echo "=============================================="
+
+          echo "Hostname : $(hostname)"
+          echo "User     : $(whoami)"
+          echo "Arch     : $(uname -m)"
+          echo "Kernel   : $(uname -r)"
+
+          echo
+          echo "OS:"
+          if [ -f /etc/os-release ]; then
+            cat /etc/os-release
+          fi
+
+          echo
+          echo "CPU:"
+          nproc --all
+
+          echo
+          echo "Memory:"
+          free -h
+
+          echo
+          echo "Disk:"
+          df -h
+
+          echo
+          echo "=============================================="
+
+      # ============================================================
+      # CHECK AMD64
+      # ============================================================
+
+      - name: Verify AMD64 runner
+        shell: bash
+        run: |
+          set -e
+
+          ARCH="$(uname -m)"
+
+          echo "Detected architecture: ${ARCH}"
+
+          case "${ARCH}" in
+            x86_64|amd64)
+              echo "AMD64 runner confirmed."
+              ;;
+            *)
+              echo "ERROR: This workflow requires an AMD64 runner."
+              echo "Detected: ${ARCH}"
+              exit 1
+              ;;
+          esac
+
+      # ============================================================
+      # FREE DISK
+      # ============================================================
+
+      - name: Free disk space
+        shell: bash
+        run: |
+          set -e
+
+          echo "Disk before cleanup:"
+          df -h
+
+          echo
+          echo "Cleaning package cache..."
+
+          sudo apt-get clean || true
+
+          sudo rm -rf /var/lib/apt/lists/* || true
+
+          echo
+          echo "Cleaning temporary files..."
+
+          sudo rm -rf /tmp/* || true
+
+          echo
+          echo "Cleaning GitHub Actions leftovers..."
+
+          sudo rm -rf /opt/hostedtoolcache/* || true
+          sudo rm -rf /opt/ghc/* || true
+          sudo rm -rf /usr/local/lib/android/* || true
+          sudo rm -rf /usr/share/dotnet/* || true
+          sudo rm -rf /usr/local/share/powershell/* || true
+
+          echo
+          echo "Disk after cleanup:"
+          df -h
+
+      # ============================================================
+      # UBUNTU 26.04 AMD64 DEPENDENCIES
+      # ============================================================
+
+- name: Install Android build dependencies
+  shell: bash
+  run: |
+    set -e
+
+    export DEBIAN_FRONTEND=noninteractive
+
+    sudo apt-get update
+
+    sudo apt-get install -y \
+      adb \
+      bc \
+      bison \
+      build-essential \
+      ccache \
+      curl \
+      flex \
+      g++ \
+      git \
+      git-lfs \
+      gnupg \
+      gperf \
+      imagemagick \
+      libelf-dev \
+      libncurses-dev \
+      libssl-dev \
+      libxml2-utils \
+      lz4 \
+      lzop \
+      python3 \
+      python3-pip \
+      python3-venv \
+      rsync \
+      schedtool \
+      squashfs-tools \
+      unzip \
+      xsltproc \
+      zip \
+      zlib1g-dev
+
+    git lfs install --skip-repo
+
+          echo
+          echo "Installing additional tools when available..."
+
+          # These packages are optional and may not exist on every
+          # Ubuntu 26.04 AMD64 release.
+          for package in \
+            libncurses5-dev \
+            pngcrush
+          do
+            if apt-cache show "${package}" >/dev/null 2>&1; then
+              sudo apt-get install -y "${package}" || true
+            else
+              echo "Skipping unavailable package: ${package}"
+            fi
+          done
+
+          echo
+          echo "Java check:"
+
+          if command -v java >/dev/null 2>&1; then
+            java -version || true
+          else
+            echo "System Java not installed."
+            echo "Android's prebuilts/JDK will be used after source sync."
+          fi
+
+          echo
+          echo "Git LFS:"
+          git lfs install --skip-repo
+
+      # ============================================================
+      # REPO TOOL
+      # ============================================================
+
+      - name: Install repo tool
+        shell: bash
+        run: |
+          set -e
+
+          mkdir -p "${HOME}/bin"
+
+          curl -fsSL \
+            https://storage.googleapis.com/git-repo-downloads/repo \
+            -o "${HOME}/bin/repo"
+
+          chmod +x "${HOME}/bin/repo"
+
+          echo "${HOME}/bin" >> "${GITHUB_PATH}"
+
+          export PATH="${HOME}/bin:${PATH}"
+
+          echo
+          echo "Repo version:"
+          repo --version
+
+      # ============================================================
+      # GIT CONFIGURATION
+      # ============================================================
+
+      - name: Configure git
+        shell: bash
+        run: |
+          set -e
+
+          git config --global user.name "${GITHUB_ACTOR}"
+
+          git config --global user.email \
+            "${GITHUB_ACTOR_ID}+${GITHUB_ACTOR}@users.noreply.github.com"
+
+          git config --global color.ui false
+          git config --global protocol.version 2
+
+          git config --global http.postBuffer 524288000
+          git config --global http.maxRequestBuffer 100M
+
+          git config --global core.compression 0
+
+          git config --global fetch.parallel 8
+
+          echo
+          echo "Git configuration:"
+          git config --global --list
+
+      # ============================================================
+      # INITIALIZE LUNARIS
+      # ============================================================
+
+      - name: Initialize Lunaris-AOSP 16.2
+        shell: bash
+        run: |
+          set -e
+
+          echo "=============================================="
+          echo " Initializing Lunaris-AOSP 16.2"
+          echo "=============================================="
+
+          repo init \
+            -u https://github.com/Lunaris-AOSP/android.git \
+            -b 16.2 \
+            --git-lfs
+
+      # ============================================================
+      # PIXEL 7 LOCAL MANIFEST
+      # ============================================================
+
+      - name: Install Pixel 7 manifest
+        shell: bash
+        run: |
+          set -e
+
+          mkdir -p .repo/local_manifests
+
+          cat > .repo/local_manifests/pixel7.xml <<'EOF'
+          <?xml version="1.0" encoding="UTF-8"?>
+          <manifest>
+
+            <!-- Pixel 7 / Panther device tree -->
+            <project
+              name="LineageOS/android_device_google_panther"
+              path="device/google/panther"
+              revision="lineage-23.2"
+              clone-depth="1" />
+
+            <!-- Google Tensor GS201 common device tree -->
+            <project
+              name="LineageOS/android_device_google_gs201"
+              path="device/google/gs201"
+              revision="lineage-23.2"
+              clone-depth="1" />
+
+            <!-- Google Tensor GS201 kernel -->
+            <project
+              name="LineageOS/android_kernel_google_gs201"
+              path="kernel/google/gs201"
+              revision="lineage-23.2"
+              clone-depth="1" />
+
+            <!-- Pixel 7 proprietary vendor files -->
+            <project
+              name="TheMuppets/proprietary_vendor_google_panther"
+              path="vendor/google/panther"
+              revision="lineage-23.2"
+              clone-depth="1" />
+
+          </manifest>
+          EOF
+
+          echo "Pixel 7 manifest:"
+          cat .repo/local_manifests/pixel7.xml
+
+          echo
+          echo "Validating XML..."
+
+          python3 - <<'PY'
+          import xml.etree.ElementTree as ET
+
+          ET.parse(".repo/local_manifests/pixel7.xml")
+
+          print("Manifest XML is valid.")
+          PY
+
+      # ============================================================
+      # SOURCE SYNC
+      # ============================================================
+
+      - name: Sync source
+        shell: bash
+        timeout-minutes: 240
+        run: |
+          set -e
+
+          CPU="$(nproc --all)"
+
+          # Avoid excessive parallelism on small AMD64 machines.
+          if [ "${CPU}" -le 2 ]; then
+            SYNC_JOBS="${CPU}"
+          elif [ "${CPU}" -le 4 ]; then
+            SYNC_JOBS=4
+          else
+            SYNC_JOBS="${CPU}"
+          fi
+
+          echo "CPU count : ${CPU}"
+          echo "Sync jobs : ${SYNC_JOBS}"
+
+          echo
+          echo "Starting repo sync..."
+
+          repo sync \
+            -c \
+            --force-sync \
+            --no-clone-bundle \
+            --no-tags \
+            --optimized-fetch \
+            --prune \
+            --retry-fetches=5 \
+            -j"${SYNC_JOBS}"
+
+      # ============================================================
+      # VERIFY SOURCE
+      # ============================================================
+
+      - name: Verify source tree
+        shell: bash
+        run: |
+          set -e
+
+          echo "=============================================="
+          echo " Verifying source tree"
+          echo "=============================================="
+
+          test -d build
+          test -d device/google/panther
+          test -d device/google/gs201
+          test -d kernel/google/gs201
+          test -d vendor/google/panther
+
+          echo
+          echo "Required directories found."
+
+          echo
+          echo "Device tree:"
+          ls -la device/google/panther | head -30
+
+          echo
+          echo "Vendor tree:"
+          ls -la vendor/google/panther | head -30
+
+      # ============================================================
+      # SETUP BUILD ENVIRONMENT
+      # ============================================================
+
+      - name: Setup Android build environment
+        shell: bash
+        run: |
+          set -e
+
+          echo "=============================================="
+          echo " Android build environment"
+          echo "=============================================="
+
+          source build/envsetup.sh
+
+          lunch "${{ inputs.PRODUCT_NAME }}"
+
+      # ============================================================
+      # OPTIONAL CLEAN BUILD
+      # ============================================================
+
+      - name: Clean build
+        if: ${{ inputs.CLEAN_BUILD == 'yes' }}
+        shell: bash
+        run: |
+          set -e
+
+          echo "=============================================="
+          echo " Cleaning build output"
+          echo "=============================================="
+
+          rm -rf out
+
+          echo "Build output cleaned."
+
+      # ============================================================
+      # BUILD
+      # ============================================================
+
+      - name: Build ROM
+        shell: bash
+        timeout-minutes: 720
+        env:
+          DEVICE_NAME: ${{ inputs.DEVICE_NAME }}
+          PRODUCT_NAME: ${{ inputs.PRODUCT_NAME }}
+          BUILD_COMMAND: ${{ inputs.BUILD_COMMAND }}
+        run: |
+          set -e
+
+          echo "=============================================="
+          echo " Lunaris-AOSP 16.2"
+          echo " Pixel 7 / Panther"
+          echo " Ubuntu 26.04 AMD64"
+          echo "=============================================="
+
+          echo "Device : ${DEVICE_NAME}"
+          echo "Product: ${PRODUCT_NAME}"
+          echo "Build  : ${BUILD_COMMAND}"
+
+          echo
+          echo "CPU:"
+          nproc --all
+
+          echo
+          echo "Memory:"
+          free -h
+
+          echo
+          echo "Disk:"
+          df -h
+
+          echo
+          echo "=============================================="
+
+          export BUILD_USERNAME="${GITHUB_ACTOR}"
+          export BUILD_HOSTNAME="github-actions-amd64"
+
+          source build/envsetup.sh
+
+          lunch "${PRODUCT_NAME}"
+
+          echo
+          echo "Build variables:"
+          echo "DEVICE_NAME=${DEVICE_NAME}"
+          echo "PRODUCT_NAME=${PRODUCT_NAME}"
+          echo "BUILD_COMMAND=${BUILD_COMMAND}"
+
+          echo
+          echo "=============================================="
+          echo " Starting ROM build"
+          echo "=============================================="
+          echo
+
+          eval "${BUILD_COMMAND}"
+
+      # ============================================================
+      # LOCATE ARTIFACTS
+      # ============================================================
+
+      - name: Locate build artifacts
+        if: always()
+        shell: bash
+        run: |
+          echo "=============================================="
+          echo " Build artifacts"
+          echo "=============================================="
+
+          OUT_DIR="out/target/product/${DEVICE_NAME:-${{ inputs.DEVICE_NAME }}}"
+
+          echo "Output directory:"
+          echo "${OUT_DIR}"
+
+          if [ -d "${OUT_DIR}" ]; then
+
+            echo
+            echo "Files:"
+
+            find "${OUT_DIR}" \
+              -maxdepth 2 \
+              -type f \
+              \( \
+                -name "*.zip" \
+                -o -name "*.img" \
+                -o -name "*.apk" \
+                -o -name "*.json" \
+                -o -name "*.txt" \
+              \) \
+              -print || true
+
+            echo
+            echo "Output directory size:"
+
+            du -sh "${OUT_DIR}" 2>/dev/null || true
+
+          else
+
+            echo "Output directory does not exist."
+
+          fi
+
+      # ============================================================
+      # UPLOAD ROM
+      # ============================================================
+
+      - name: Upload ROM artifacts
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: lunaris-aosp-16.2-${{ inputs.DEVICE_NAME }}
+          retention-days: 7
+          if-no-files-found: warn
+
+          path: |
+            out/target/product/${{ inputs.DEVICE_NAME }}/*.zip
+            out/target/product/${{ inputs.DEVICE_NAME }}/*.img
+            out/target/product/${{ inputs.DEVICE_NAME }}/*boot*.img
+            out/target/product/${{ inputs.DEVICE_NAME }}/*vendor*.img
+            out/target/product/${{ inputs.DEVICE_NAME }}/*.json
+
+      # ============================================================
+      # FAILURE DIAGNOSTICS
+      # ============================================================
+
+      - name: Show final disk usage
+        if: always()
+        shell: bash
+        run: |
+          echo "=============================================="
+          echo " Final disk usage"
+          echo "=============================================="
+
+          df -h
+
+          echo
+          echo "Memory:"
+          free -h
+
+          echo
+          echo "Workspace size:"
+          du -sh . 2>/dev/null || true
+
+          echo
+          echo "Output size:"
+          du -sh out 2>/dev/null || true
+
+          echo
+          echo "Largest directories:"
+
+          du -xh . \
+            --max-depth=2 \
+            2>/dev/null \
+            | sort -h \
+            | tail -20 || true
