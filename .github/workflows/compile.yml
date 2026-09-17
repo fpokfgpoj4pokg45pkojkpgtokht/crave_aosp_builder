@@ -6,7 +6,7 @@
 # SPDX-License-Identifier: Apache-2.0
 #
 
-name: Lunaris-AOSP 16.2 - Pixel 7 Fast Build
+name: Lunaris-AOSP 16.2 - Pixel 7 Fast Builed
 
 on:
   workflow_dispatch:
