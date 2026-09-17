@@ -6,7 +6,7 @@
 # SPDX-License-Identifier: Apache-2.0
 #
 
-name: Lunaris-AOSP 16.2 - Pixel 7 Fast Builed
+name: Lunaris-AOSP 16.2 - Pixel 7 Fast Build
 
 on:
   workflow_dispatch:
@@ -52,7 +52,7 @@ jobs:
     # Debian ARM64 self-hosted runner
     runs-on: [self-hosted, linux, ARM64]
 
-    timeout-minutes: 1800
+    timeout-minutes: 99999
 
     permissions:
       contents: read
