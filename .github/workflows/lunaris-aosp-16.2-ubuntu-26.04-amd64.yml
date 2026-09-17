@@ -1,8 +1,5 @@
-#
-# Copyright (C) 2024-2025 Antonino Scordino
-# Copyright (C) 2024-2025 Souhrud Reddy
-# Copyright (C) 2026 Customization for Lunaris-AOSP / Pixel 7
 
+ 
 name: Lunaris-AOSP 16.2 - Pixel 7 Fast Build
 
 on:
