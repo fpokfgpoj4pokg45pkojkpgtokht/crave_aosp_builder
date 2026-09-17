@@ -170,47 +170,45 @@ jobs:
       # DEBIAN ARM64 DEPENDENCIES
       # ============================================================
 
-- name: Install Android build dependencies
-  shell: bash
-  run: |
-    set -e
+      - name: Install Android build dependencies
+        shell: bash
+        run: |
+          set -e
 
-    export DEBIAN_FRONTEND=noninteractive
+          export DEBIAN_FRONTEND=noninteractive
 
-    sudo apt-get update
+          sudo apt-get update
 
-    sudo apt-get install -y \
-      adb \
-      bc \
-      bison \
-      build-essential \
-      ccache \
-      curl \
-      flex \
-      g++ \
-      git \
-      git-lfs \
-      gnupg \
-      gperf \
-      imagemagick \
-      libelf-dev \
-      libncurses-dev \
-      libssl-dev \
-      libxml2-utils \
-      lz4 \
-      lzop \
-      python3 \
-      python3-pip \
-      python3-venv \
-      rsync \
-      schedtool \
-      squashfs-tools \
-      unzip \
-      xsltproc \
-      zip \
-      zlib1g-dev
-
-    git lfs install --skip-repo
+          sudo apt-get install -y \
+            adb \
+            bc \
+            bison \
+            build-essential \
+            ccache \
+            curl \
+            flex \
+            g++ \
+            git \
+            git-lfs \
+            gnupg \
+            gperf \
+            imagemagick \
+            libelf-dev \
+            libncurses-dev \
+            libssl-dev \
+            libxml2-utils \
+            lz4 \
+            lzop \
+            python3 \
+            python3-pip \
+            python3-venv \
+            rsync \
+            schedtool \
+            squashfs-tools \
+            unzip \
+            xsltproc \
+            zip \
+            zlib1g-dev
 
           echo
           echo "Installing additional tools when available..."
@@ -316,6 +314,21 @@ jobs:
       # ============================================================
       # PIXEL 7 LOCAL MANIFEST
       # ============================================================
+      #
+      # NOTE: The GS201 (Tensor) kernel is NOT pulled from a single
+      # "android_kernel_google_gs201" repo on a "lineage-23.2" branch
+      # -- that repo/branch combination does not exist and is why the
+      # previous version of this workflow failed with:
+      #   fatal: couldn't find remote ref refs/heads/lineage-23.2
+      # Modern LineageOS-based Tensor (gs201) builds source the kernel
+      # from "kernel/google/gs201/private/gs-google" plus several
+      # "kernel/google-modules/*" projects, pinned to AOSP/CodeLinaro
+      # tags (not lineage branches). These are resolved automatically
+      # by "breakfast"/roomservice once the device tree is present, so
+      # we no longer hardcode a kernel project here -- see the
+      # "Resolve device dependencies" step below.
+      #
+      # ============================================================
 
       - name: Install Pixel 7 manifest
         shell: bash
@@ -339,13 +352,6 @@ jobs:
             <project
               name="LineageOS/android_device_google_gs201"
               path="device/google/gs201"
-              revision="lineage-23.2"
-              clone-depth="1" />
-
-            <!-- Google Tensor GS201 kernel -->
-            <project
-              name="LineageOS/android_kernel_google_gs201"
-              path="kernel/google/gs201"
               revision="lineage-23.2"
               clone-depth="1" />
 
@@ -374,7 +380,7 @@ jobs:
           PY
 
       # ============================================================
-      # SOURCE SYNC
+      # SOURCE SYNC (PASS 1: default manifest + device/vendor trees)
       # ============================================================
 
       - name: Sync source
@@ -411,6 +417,91 @@ jobs:
             -j"${SYNC_JOBS}"
 
       # ============================================================
+      # RESOLVE DEVICE DEPENDENCIES (kernel + google-modules)
+      # ============================================================
+      #
+      # Runs "breakfast" for the target device. This walks the device
+      # tree's own dependency list (roomservice) and, if it finds
+      # missing projects such as the GS201 GKI kernel and its
+      # google-modules, writes them into
+      # .repo/local_manifests/roomservice.xml with the correct,
+      # currently-valid revisions -- instead of us hardcoding a
+      # "lineage-23.2" kernel branch that doesn't exist.
+      #
+      # ============================================================
+
+      - name: Resolve device dependencies (kernel, google-modules)
+        shell: bash
+        run: |
+          set -e
+
+          echo "=============================================="
+          echo " Resolving device dependencies via breakfast"
+          echo "=============================================="
+
+          source build/envsetup.sh
+
+          # breakfast triggers roomservice for the device if any
+          # required projects (kernel, google-modules, etc.) are
+          # still missing from the tree.
+          breakfast "${{ inputs.DEVICE_NAME }}" || true
+
+          if [ -f .repo/local_manifests/roomservice.xml ]; then
+            echo
+            echo "roomservice added the following manifest:"
+            cat .repo/local_manifests/roomservice.xml
+          else
+            echo
+            echo "No additional roomservice manifest was generated."
+            echo "If the kernel still fails to sync below, check the"
+            echo "device/google/gs201 repo on GitHub for its current"
+            echo "kernel/google-modules submanifest and pin it manually"
+            echo "in .repo/local_manifests/pixel7.xml with the correct"
+            echo "(non lineage-23.2) tag-based revisions."
+          fi
+
+      # ============================================================
+      # SOURCE SYNC (PASS 2: pull in anything roomservice added)
+      # ============================================================
+
+      - name: Sync source (dependencies)
+        shell: bash
+        timeout-minutes: 240
+        run: |
+          set -e
+
+          if [ ! -f .repo/local_manifests/roomservice.xml ]; then
+            echo "No roomservice manifest present, nothing new to sync."
+            exit 0
+          fi
+
+          CPU="$(nproc --all)"
+
+          if [ "${CPU}" -le 2 ]; then
+            SYNC_JOBS="${CPU}"
+          elif [ "${CPU}" -le 4 ]; then
+            SYNC_JOBS=4
+          else
+            SYNC_JOBS="${CPU}"
+          fi
+
+          echo "CPU count : ${CPU}"
+          echo "Sync jobs : ${SYNC_JOBS}"
+
+          echo
+          echo "Syncing newly resolved dependencies..."
+
+          repo sync \
+            -c \
+            --force-sync \
+            --no-clone-bundle \
+            --no-tags \
+            --optimized-fetch \
+            --prune \
+            --retry-fetches=5 \
+            -j"${SYNC_JOBS}"
+
+      # ============================================================
       # VERIFY SOURCE
       # ============================================================
 
@@ -426,7 +517,6 @@ jobs:
           test -d build
           test -d device/google/panther
           test -d device/google/gs201
-          test -d kernel/google/gs201
           test -d vendor/google/panther
 
           echo
@@ -607,29 +697,4 @@ jobs:
         if: always()
         shell: bash
         run: |
-          echo "=============================================="
-          echo " Final disk usage"
-          echo "=============================================="
-
-          df -h
-
-          echo
-          echo "Memory:"
-          free -h
-
-          echo
-          echo "Workspace size:"
-          du -sh . 2>/dev/null || true
-
-          echo
-          echo "Output size:"
-          du -sh out 2>/dev/null || true
-
-          echo
-          echo "Largest directories:"
-
-          du -xh . \
-            --max-depth=2 \
-            2>/dev/null \
-            | sort -h \
-            | tail -20 || true
+          echo "==
