@@ -50,7 +50,7 @@ jobs:
     name: Build Lunaris-AOSP 16.2 - Pixel 7
 
     # Debian ARM64 self-hosted runner
-    runs-on: [self-hosted, linux, ARM64]
+    runs-on: [self-hosted, linux, X64]
 
     timeout-minutes: 99999
 
