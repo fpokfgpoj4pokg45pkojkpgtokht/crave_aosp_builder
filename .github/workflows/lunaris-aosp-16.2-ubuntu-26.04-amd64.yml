@@ -50,7 +50,7 @@ jobs:
     name: Build Lunaris-AOSP 16.2 - Pixel 7
 
     # Ubuntu 26.04 AMD64 self-hosted runner
-    runs-on: [self-hosted, linux, AMD64]
+    runs-on: [self-hosted, Linux, X64]
 
     timeout-minutes: 1800
 
