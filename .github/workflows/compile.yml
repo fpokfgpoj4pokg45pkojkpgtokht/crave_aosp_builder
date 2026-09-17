@@ -50,7 +50,7 @@ jobs:
     name: Build Lunaris-AOSP 16.2 - Pixel 7
 
     # Debian ARM64 self-hosted runner
-    runs-on: [self-hosted, linux, X64]
+    runs-on: self-hosted
 
     timeout-minutes: 99999
 
@@ -104,30 +104,6 @@ jobs:
 
           echo
           echo "=============================================="
-
-      # ============================================================
-      # CHECK ARM64
-      # ============================================================
-
-      - name: Verify ARM64 runner
-        shell: bash
-        run: |
-          set -e
-
-          ARCH="$(uname -m)"
-
-          echo "Detected architecture: ${ARCH}"
-
-          case "${ARCH}" in
-            aarch64|arm64)
-              echo "ARM64 runner confirmed."
-              ;;
-            *)
-              echo "ERROR: This workflow requires an ARM64 runner."
-              echo "Detected: ${ARCH}"
-              exit 1
-              ;;
-          esac
 
       # ============================================================
       # FREE DISK
