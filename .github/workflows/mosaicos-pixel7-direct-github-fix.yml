@@ -1,0 +1,225 @@
+name: MosaicOS Pixel 7 Build (Android 17)
+
+on:
+  workflow_dispatch:
+    inputs:
+      DEVICE_NAME:
+        description: "Device codename"
+        required: true
+        default: "panther"
+        type: string
+      PRODUCT_NAME:
+        description: "Lunch target"
+        required: true
+        default: "lineage_panther-bp4a-user"
+        type: string
+      BUILD_COMMAND:
+        description: "Build command"
+        required: true
+        default: "m bacon"
+        type: string
+      MANIFEST_BRANCH:
+        description: "Mosaic-OS/platform_manifest branch to build from (Android 17 = \"17\")."
+        required: true
+        default: "17"
+        type: string
+      FORCE_RESYNC:
+        description: "Fetch/reset only the three Pixel 7 GitHub repositories."
+        required: true
+        default: "no"
+        type: choice
+        options: ["no", "yes"]
+      CLEAN_BUILD:
+        description: "Clean build output before building?"
+        required: true
+        default: "no"
+        type: choice
+        options: ["no", "yes"]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: mosaicos-panther-build
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: Build MosaicOS - Pixel 7 (Android 17)
+    runs-on: self-hosted
+    timeout-minutes: 99999
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout workflow repository
+        uses: actions/checkout@v4
+        with:
+          clean: false
+
+      - name: Show runner information
+        shell: bash
+        run: |
+          set -e
+          echo "Hostname: $(hostname)"
+          echo "User: $(whoami)"
+          echo "Architecture: $(uname -m)"
+          echo "CPU count: $(nproc --all)"
+          free -h
+          df -h
+
+      - name: Install Android build dependencies
+        shell: bash
+        run: |
+          set -e
+          export DEBIAN_FRONTEND=noninteractive
+          REQUIRED_CMDS="adb bc bison gcc g++ ccache curl flex gperf convert git git-lfs gpg lz4 lzop python3 pip3 rsync schedtool mksquashfs unzip xsltproc zip"
+          MISSING=""
+          for cmd in ${REQUIRED_CMDS}; do
+            command -v "${cmd}" >/dev/null 2>&1 || MISSING="${MISSING} ${cmd}"
+          done
+          if [ -z "${MISSING}" ]; then
+            echo "Required build tools already installed."
+          else
+            if [ "$(id -u)" -ne 0 ] && ! apt-get update >/tmp/apt_probe.log 2>&1; then
+              echo "ERROR: Missing tools require apt-get, but the runner has no usable apt privileges."
+              cat /tmp/apt_probe.log
+              exit 1
+            fi
+            apt-get update
+            apt-get install -y adb bc bison build-essential ccache curl flex g++ git git-lfs gnupg gperf imagemagick libelf-dev libncurses-dev libssl-dev libxml2-utils lz4 lzop python3 python3-pip python3-venv rsync schedtool squashfs-tools unzip xsltproc zip zlib1g-dev
+          fi
+          git lfs install --skip-repo
+
+      - name: Verify persistent Android base tree
+        shell: bash
+        run: |
+          set -e
+          test -f build/envsetup.sh || {
+            echo "ERROR: build/envsetup.sh is missing."
+            echo "This workflow intentionally does not full-sync the MosaicOS platform."
+            echo "Bootstrap the persistent base Android tree once before using this targeted workflow."
+            exit 1
+          }
+          echo "Persistent base Android tree is available."
+
+      - name: Sync Pixel 7 repositories directly from GitHub
+        shell: bash
+        env:
+          FORCE_RESYNC: ${{ inputs.FORCE_RESYNC }}
+        run: |
+          set -euo pipefail
+
+          # Do NOT use `repo sync` for these projects. Their stale Repo metadata
+          # has remote.aosp.url set to android.googlesource.com. Direct GitHub
+          # git fetch/clone bypasses that incorrect remote completely.
+          declare -A REPOS=(
+            ["device/google/pantah"]="https://github.com/LineageOS/android_device_google_pantah.git"
+            ["device/google/gs201"]="https://github.com/LineageOS/android_device_google_gs201.git"
+            ["vendor/google/panther"]="https://github.com/TheMuppets/proprietary_vendor_google_panther.git"
+          )
+          BRANCH="lineage-24.0"
+
+          for path in "${!REPOS[@]}"; do
+            url="${REPOS[${path}]}"
+            echo "=============================================="
+            echo "GitHub project: ${path}"
+            echo "Remote URL: ${url}"
+
+            if [ -d "${path}/.git" ]; then
+              echo "Existing checkout found; changing origin to GitHub."
+              git -C "${path}" remote set-url origin "${url}" || git -C "${path}" remote add origin "${url}"
+              git -C "${path}" fetch --no-tags --depth=1 origin "${BRANCH}"
+              git -C "${path}" checkout -B "${BRANCH}" "origin/${BRANCH}"
+              if [ "${FORCE_RESYNC}" = "yes" ]; then
+                git -C "${path}" reset --hard "origin/${BRANCH}"
+              fi
+            else
+              echo "Cloning directly from GitHub."
+              mkdir -p "$(dirname "${path}")"
+              git clone --depth=1 --branch "${BRANCH}" "${url}" "${path}"
+            fi
+
+            echo "Verified origin: $(git -C "${path}" remote get-url origin)"
+            git -C "${path}" rev-parse --short HEAD
+          done
+
+      - name: Verify GitHub checkouts
+        shell: bash
+        run: |
+          set -e
+          for path in device/google/pantah device/google/gs201 vendor/google/panther; do
+            test -d "${path}/.git"
+            url="$(git -C "${path}" remote get-url origin)"
+            case "${url}" in
+              https://github.com/*)
+                echo "${path}: ${url}"
+                ;;
+              *)
+                echo "ERROR: ${path} is not using a GitHub origin: ${url}"
+                exit 1
+                ;;
+            esac
+          done
+
+      - name: Setup Android build environment
+        shell: bash
+        run: |
+          set -e
+          source build/envsetup.sh
+          lunch "${{ inputs.PRODUCT_NAME }}"
+
+      - name: Optional clean build
+        if: ${{ inputs.CLEAN_BUILD == 'yes' }}
+        shell: bash
+        run: |
+          set -e
+          rm -rf out
+          echo "Build output cleaned."
+
+      - name: Build ROM
+        shell: bash
+        timeout-minutes: 720
+        env:
+          DEVICE_NAME: ${{ inputs.DEVICE_NAME }}
+          PRODUCT_NAME: ${{ inputs.PRODUCT_NAME }}
+          BUILD_COMMAND: ${{ inputs.BUILD_COMMAND }}
+        run: |
+          set -e
+          export BUILD_USERNAME="${GITHUB_ACTOR}"
+          export BUILD_HOSTNAME="github-actions-arm64"
+          source build/envsetup.sh
+          lunch "${PRODUCT_NAME}"
+          bash -c "${BUILD_COMMAND}"
+
+      - name: Locate build artifacts
+        if: always()
+        shell: bash
+        env:
+          DEVICE_NAME: ${{ inputs.DEVICE_NAME }}
+        run: |
+          OUT_DIR="out/target/product/${DEVICE_NAME}"
+          echo "Output directory: ${OUT_DIR}"
+          if [ -d "${OUT_DIR}" ]; then
+            find "${OUT_DIR}" -maxdepth 2 -type f \( -name "*.zip" -o -name "*.img" -o -name "*.apk" -o -name "*.json" -o -name "*.txt" \) -print || true
+            du -sh "${OUT_DIR}" 2>/dev/null || true
+          fi
+
+      - name: Upload ROM artifacts
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: mosaicos-${{ inputs.DEVICE_NAME }}-android17-build
+          retention-days: 7
+          if-no-files-found: warn
+          path: |
+            out/target/product/${{ inputs.DEVICE_NAME }}/*.zip
+            out/target/product/${{ inputs.DEVICE_NAME }}/*.img
+            out/target/product/${{ inputs.DEVICE_NAME }}/*boot*.img
+            out/target/product/${{ inputs.DEVICE_NAME }}/*vendor*.img
+            out/target/product/${{ inputs.DEVICE_NAME }}/*.json
+
+      - name: Show final disk usage
+        if: always()
+        shell: bash
+        run: df -h
