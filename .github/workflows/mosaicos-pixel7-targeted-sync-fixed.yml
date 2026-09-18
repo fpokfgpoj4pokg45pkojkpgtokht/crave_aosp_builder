@@ -1,0 +1,344 @@
+name: MosaicOS Pixel 7 Build (Android 17)
+
+on:
+  workflow_dispatch:
+    inputs:
+      DEVICE_NAME:
+        description: "Device codename"
+        required: true
+        default: "panther"
+        type: string
+      PRODUCT_NAME:
+        description: "Lunch target"
+        required: true
+        default: "lineage_panther-bp4a-user"
+        type: string
+      BUILD_COMMAND:
+        description: "Build command"
+        required: true
+        default: "m bacon"
+        type: string
+      MANIFEST_BRANCH:
+        description: "Mosaic-OS/platform_manifest branch to build from (Android 17 = \"17\")."
+        required: true
+        default: "17"
+        type: string
+      FORCE_RESYNC:
+        description: "Force-reset only the targeted Pixel 7 projects to remote state. Leave 'no' for normal incremental syncs."
+        required: true
+        default: "no"
+        type: choice
+        options:
+          - "no"
+          - "yes"
+      CLEAN_BUILD:
+        description: "Clean build? Warning: this deletes only out/ and is slower."
+        required: true
+        default: "no"
+        type: choice
+        options:
+          - "no"
+          - "yes"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: mosaicos-panther-build
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: Build MosaicOS - Pixel 7 (Android 17)
+    runs-on: self-hosted
+    timeout-minutes: 99999
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout workflow repository
+        uses: actions/checkout@v4
+        with:
+          clean: false
+
+      - name: Show runner information
+        shell: bash
+        run: |
+          set -e
+          echo "=============================================="
+          echo " MosaicOS ARM64 Build Runner"
+          echo "=============================================="
+          echo "Hostname : $(hostname)"
+          echo "User     : $(whoami)"
+          echo "Arch     : $(uname -m)"
+          echo "Kernel   : $(uname -r)"
+          echo
+          echo "OS:"
+          [ -f /etc/os-release ] && cat /etc/os-release || true
+          echo
+          echo "CPU:"; nproc --all
+          echo "Memory:"; free -h
+          echo "Disk:"; df -h
+
+      - name: Install Android build dependencies
+        shell: bash
+        run: |
+          set -e
+          export DEBIAN_FRONTEND=noninteractive
+          REQUIRED_CMDS="adb bc bison gcc g++ ccache curl flex gperf convert git git-lfs gpg lz4 lzop python3 pip3 rsync schedtool mksquashfs unzip xsltproc zip"
+          MISSING=""
+          for cmd in ${REQUIRED_CMDS}; do
+            command -v "${cmd}" >/dev/null 2>&1 || MISSING="${MISSING} ${cmd}"
+          done
+
+          if [ -z "${MISSING}" ]; then
+            echo "All required build tools are already present; skipping apt-get."
+          else
+            echo "Missing tools:${MISSING}"
+            if [ "$(id -u)" -ne 0 ] && ! apt-get update >/tmp/apt_probe.log 2>&1; then
+              echo "apt-get needs elevated privileges and this workflow does not use sudo."
+              cat /tmp/apt_probe.log
+              exit 1
+            fi
+            apt-get update
+            apt-get install -y \
+              adb bc bison build-essential ccache curl flex g++ git git-lfs gnupg gperf imagemagick libelf-dev libncurses-dev libssl-dev libxml2-utils lz4 lzop python3 python3-pip python3-venv rsync schedtool squashfs-tools unzip xsltproc zip zlib1g-dev
+            for package in libncurses5-dev pngcrush; do
+              apt-cache show "${package}" >/dev/null 2>&1 && apt-get install -y "${package}" || true
+            done
+          fi
+          git lfs install --skip-repo
+
+      - name: Install repo tool
+        shell: bash
+        run: |
+          set -e
+          mkdir -p "${HOME}/bin"
+          curl -fsSL https://storage.googleapis.com/git-repo-downloads/repo -o "${HOME}/bin/repo"
+          chmod +x "${HOME}/bin/repo"
+          echo "${HOME}/bin" >> "${GITHUB_PATH}"
+          export PATH="${HOME}/bin:${PATH}"
+          repo --version
+
+      - name: Configure git
+        shell: bash
+        run: |
+          set -e
+          git config --global user.name "${GITHUB_ACTOR}"
+          git config --global user.email "${GITHUB_ACTOR_ID}+${GITHUB_ACTOR}@users.noreply.github.com"
+          git config --global color.ui false
+          git config --global protocol.version 2
+          git config --global http.postBuffer 524288000
+          git config --global http.maxRequestBuffer 100M
+          git config --global core.compression 0
+          git config --global fetch.parallel 8
+
+      - name: Initialize MosaicOS metadata
+        shell: bash
+        env:
+          MANIFEST_BRANCH: ${{ inputs.MANIFEST_BRANCH }}
+        run: |
+          set -e
+          export PATH="${HOME}/bin:${PATH}"
+          echo "=============================================="
+          echo " Initializing MosaicOS metadata (Android 17 / ${MANIFEST_BRANCH})"
+          echo "=============================================="
+          repo init -u https://github.com/Mosaic-OS/platform_manifest.git -b "${MANIFEST_BRANCH}" --git-lfs
+
+      - name: Install Pixel 7 manifest
+        shell: bash
+        run: |
+          set -e
+          mkdir -p .repo/local_manifests
+          cat > .repo/local_manifests/pixel7.xml <<'EOF'
+          <?xml version="1.0" encoding="UTF-8"?>
+          <manifest>
+            <project
+              name="LineageOS/android_device_google_pantah"
+              path="device/google/pantah"
+              revision="lineage-24.0"
+              clone-depth="1" />
+            <project
+              name="LineageOS/android_device_google_gs201"
+              path="device/google/gs201"
+              revision="lineage-24.0"
+              clone-depth="1" />
+            <project
+              name="TheMuppets/proprietary_vendor_google_panther"
+              path="vendor/google/panther"
+              revision="lineage-24.0"
+              clone-depth="1" />
+          </manifest>
+          EOF
+          python3 - <<'PY'
+          import xml.etree.ElementTree as ET
+          ET.parse('.repo/local_manifests/pixel7.xml')
+          print('Pixel 7 local manifest XML is valid.')
+          PY
+
+      - name: Check persistent Android base tree
+        shell: bash
+        run: |
+          set -e
+          if [ ! -f build/envsetup.sh ]; then
+            echo "ERROR: The persistent Android base tree is missing build/envsetup.sh."
+            echo "This workflow intentionally does not full-sync the MosaicOS manifest."
+            echo "Bootstrap the base Android tree once separately, then rerun this workflow."
+            exit 1
+          fi
+          echo "Persistent Android base tree found."
+
+      - name: Sync Pixel 7 device and declared dependencies
+        shell: bash
+        timeout-minutes: 240
+        env:
+          FORCE_RESYNC: ${{ inputs.FORCE_RESYNC }}
+          DEVICE_NAME: ${{ inputs.DEVICE_NAME }}
+        run: |
+          set -e
+          export PATH="${HOME}/bin:${PATH}"
+
+          CPU="$(nproc --all)"
+          if [ "${CPU}" -le 2 ]; then
+            SYNC_JOBS="${CPU}"
+          elif [ "${CPU}" -le 4 ]; then
+            SYNC_JOBS=4
+          else
+            SYNC_JOBS="${CPU}"
+          fi
+
+          REQUIRED_PROJECTS=(
+            "device/google/pantah"
+            "device/google/gs201"
+            "vendor/google/panther"
+          )
+
+          # Sync the local-manifest device/vendor entries first. This command
+          # always has explicit project paths and never performs a full sync.
+          SYNC_FLAGS=(-c --no-clone-bundle --no-tags --optimized-fetch --retry-fetches=5 -j"${SYNC_JOBS}")
+          if [ "${FORCE_RESYNC}" = "yes" ]; then
+            SYNC_FLAGS+=(--force-sync)
+          fi
+          echo "Syncing explicit Pixel 7 projects only:"
+          printf '  - %s\n' "${REQUIRED_PROJECTS[@]}"
+          repo sync "${SYNC_FLAGS[@]}" "${REQUIRED_PROJECTS[@]}"
+
+          # Dependency manifests are generated by the checked-out device tree.
+          # Do not run breakfast here: it may invoke its own unscoped repo sync.
+          source build/envsetup.sh
+          breakfast "${DEVICE_NAME}" || true
+
+          if [ -f .repo/local_manifests/roomservice.xml ]; then
+            echo "roomservice manifest:"
+            cat .repo/local_manifests/roomservice.xml
+            mapfile -t ROOM_PROJECTS < <(
+              python3 - <<'PY'
+          import xml.etree.ElementTree as ET
+          root = ET.parse('.repo/local_manifests/roomservice.xml').getroot()
+          for project in root.findall('project'):
+              path = project.get('path')
+              if path:
+                  print(path)
+          PY
+            )
+
+            KERNEL_PROJECTS=()
+            for path in "${ROOM_PROJECTS[@]}"; do
+              case "${path}" in
+                kernel/google/*|kernel/*|hardware/google/*|device/google/*kernel*|vendor/google/*)
+                  KERNEL_PROJECTS+=("${path}")
+                  ;;
+                *)
+                  echo "Not syncing non-kernel roomservice dependency: ${path}"
+                  ;;
+              esac
+            done
+
+            if [ "${#KERNEL_PROJECTS[@]}" -gt 0 ]; then
+              mapfile -t KERNEL_PROJECTS < <(printf '%s\n' "${KERNEL_PROJECTS[@]}" | awk 'NF && !seen[$0]++')
+              echo "Syncing explicit kernel/module dependencies only:"
+              printf '  - %s\n' "${KERNEL_PROJECTS[@]}"
+              repo sync "${SYNC_FLAGS[@]}" "${KERNEL_PROJECTS[@]}"
+            else
+              echo "roomservice did not declare a matching kernel/module project."
+            fi
+          else
+            echo "No roomservice manifest generated; no additional kernel/module sync requested."
+          fi
+
+      - name: Verify source tree
+        shell: bash
+        run: |
+          set -e
+          test -d build
+          test -d device/google/pantah
+          test -d device/google/gs201
+          test -d vendor/google/panther
+          echo "Required Android build, device, and vendor directories are present."
+          echo "Device tree:"; ls -la device/google/pantah | head -30
+          echo "Vendor tree:"; ls -la vendor/google/panther | head -30
+
+      - name: Setup Android build environment
+        shell: bash
+        run: |
+          set -e
+          source build/envsetup.sh
+          lunch "${{ inputs.PRODUCT_NAME }}"
+
+      - name: Optional clean build
+        if: ${{ inputs.CLEAN_BUILD == 'yes' }}
+        shell: bash
+        run: |
+          set -e
+          rm -rf out
+          echo "Build output cleaned."
+
+      - name: Build ROM
+        shell: bash
+        timeout-minutes: 720
+        env:
+          DEVICE_NAME: ${{ inputs.DEVICE_NAME }}
+          PRODUCT_NAME: ${{ inputs.PRODUCT_NAME }}
+          BUILD_COMMAND: ${{ inputs.BUILD_COMMAND }}
+          MANIFEST_BRANCH: ${{ inputs.MANIFEST_BRANCH }}
+        run: |
+          set -e
+          export BUILD_USERNAME="${GITHUB_ACTOR}"
+          export BUILD_HOSTNAME="github-actions-arm64"
+          source build/envsetup.sh
+          lunch "${PRODUCT_NAME}"
+          echo "Starting: ${BUILD_COMMAND}"
+          bash -c "${BUILD_COMMAND}"
+
+      - name: Locate build artifacts
+        if: always()
+        shell: bash
+        env:
+          DEVICE_NAME: ${{ inputs.DEVICE_NAME }}
+        run: |
+          OUT_DIR="out/target/product/${DEVICE_NAME}"
+          echo "Output directory: ${OUT_DIR}"
+          if [ -d "${OUT_DIR}" ]; then
+            find "${OUT_DIR}" -maxdepth 2 -type f \( -name "*.zip" -o -name "*.img" -o -name "*.apk" -o -name "*.json" -o -name "*.txt" \) -print || true
+            du -sh "${OUT_DIR}" 2>/dev/null || true
+          else
+            echo "Output directory does not exist."
+          fi
+
+      - name: Upload ROM artifacts
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: mosaicos-${{ inputs.DEVICE_NAME }}-android17-build
+          retention-days: 7
+          if-no-files-found: warn
+          path: |
+            out/target/product/${{ inputs.DEVICE_NAME }}/*.zip
+            out/target/product/${{ inputs.DEVICE_NAME }}/*.img
+            out/target/product/${{ inputs.DEVICE_NAME }}/*boot*.img
+            out/target/product/${{ inputs.DEVICE_NAME }}/*vendor*.img
+            out/target/product/${{ inputs.DEVICE_NAME }}/*.json
+
+      - name: Show final disk usage
+        if: always()
+        shell: bash
+        run: df -h
