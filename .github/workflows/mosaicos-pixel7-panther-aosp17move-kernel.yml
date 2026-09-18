@@ -1,0 +1,648 @@
+name: MosaicOS Pixel 7 Build (Android 17)
+
+on:
+  workflow_dispatch:
+    inputs:
+      DEVICE_NAME:
+        description: "Device codename"
+        required: true
+        default: "panther"
+        type: string
+      PRODUCT_NAME:
+        description: "Lunch target"
+        required: true
+        default: "aosp_panther-trunk_staging-userdebug"
+        type: string
+      BUILD_COMMAND:
+        description: "Build command"
+        required: true
+        default: "m otatools"
+        type: string
+      MANIFEST_BRANCH:
+        description: "Mosaic-OS/platform_manifest branch to build from (Android 17 = \"17\")."
+        required: true
+        default: "17"
+        type: string
+      SKIP_SYNC:
+        description: "Skip only the 'Sync source (pass 1)' step. 'Resolve device dependencies' and 'Sync source (dependencies)' still run as normal. Only use this if you are certain every project in the base manifest already has a real, complete git checkout (not just files copied in manually)."
+        required: true
+        default: "no"
+        type: choice
+        options:
+          - "no"
+          - "yes"
+      MOSAICOS_ZIP_URL:
+        description: "Optional HTTPS ZIP containing additional MosaicOS/device source files to merge into the Android tree."
+        required: false
+        default: ""
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: mosaicos-panther-build
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: Build MosaicOS - Pixel 7 (Android 17)
+    runs-on: self-hosted
+    timeout-minutes: 99999
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout workflow repository
+        uses: actions/checkout@v4
+        with:
+          # IMPORTANT: the AOSP tree (repo init/sync output, ccache, out/, etc.)
+          # lives in this same workspace directory on the self-hosted runner.
+          # actions/checkout defaults to clean: true, which runs
+          # `git clean -ffdx` + `git reset --hard` and will delete all of that
+          # untracked source before every run. Disable it so only this
+          # workflow repo's own tracked files are touched.
+          clean: false
+
+      - name: Show runner information
+        shell: bash
+        run: |
+          set -e
+          echo "=============================================="
+          echo " MosaicOS AMD64 Build Runner"
+          echo "=============================================="
+          echo "Hostname : $(hostname)"
+          echo "User     : $(whoami)"
+          echo "Arch     : $(uname -m)"
+          echo "Kernel   : $(uname -r)"
+          echo
+          echo "OS:"
+          if [ -f /etc/os-release ]; then
+            cat /etc/os-release
+          fi
+          echo
+          echo "CPU:"
+          nproc --all
+          echo
+          echo "Memory:"
+          free -h
+          echo
+          echo "Disk:"
+          df -h
+          echo
+          echo "=============================================="
+          
+
+      - name: Install Android build dependencies
+        shell: bash
+        run: |
+          set -e
+          export DEBIAN_FRONTEND=noninteractive
+
+          REQUIRED_CMDS="adb bc bison gcc g++ ccache curl flex gperf convert git git-lfs gpg lz4 lzop python3 pip3 rsync schedtool mksquashfs unzip xsltproc zip"
+          MISSING=""
+          for cmd in ${REQUIRED_CMDS}; do
+            command -v "${cmd}" >/dev/null 2>&1 || MISSING="${MISSING} ${cmd}"
+          done
+
+          if [ -z "${MISSING}" ]; then
+            echo "=============================================="
+            echo " All required build tools are already present."
+            echo "=============================================="
+          else
+            echo "Missing tools:${MISSING}"
+            if [ "$(id -u)" -ne 0 ] && ! apt-get update >/tmp/apt_probe.log 2>&1; then
+              echo "=============================================="
+              echo " ERROR: apt-get needs elevated privileges here,"
+              echo " unattended/remote run)."
+              echo "=============================================="
+              echo "Probe output:"
+              cat /tmp/apt_probe.log
+              echo
+              echo "Fix options:"
+              echo "  1) Run the runner service as root, or"
+              echo "  3) Pre-install the missing tools once manually, then this"
+              echo "     step will skip straight through on future runs."
+              exit 1
+            fi
+            apt-get update
+            apt-get install -y \
+              adb bc bison build-essential ccache curl flex g++ git git-lfs gnupg gperf imagemagick libelf-dev libncurses-dev libssl-dev libxml2-utils lz4 lzop python3 python3-pip python3-venv rsync schedtool squashfs-tools unzip xsltproc zip zlib1g-dev
+            echo
+            echo "Installing additional tools when available..."
+            for package in libncurses5-dev pngcrush; do
+              if apt-cache show "${package}" >/dev/null 2>&1; then
+                apt-get install -y "${package}" || true
+              else
+                echo "Skipping unavailable package: ${package}"
+              fi
+            done
+          fi
+
+          echo
+          echo "Java check:"
+          if command -v java >/dev/null 2>&1; then
+            java -version || true
+          else
+            echo "System Java not installed."
+            echo "Android's prebuilts/JDK will be used after source sync."
+          fi
+          echo
+          echo "Git LFS:"
+          git lfs install --skip-repo
+
+      - name: Install repo tool
+        shell: bash
+        run: |
+          set -e
+          mkdir -p "${HOME}/bin"
+          curl -fsSL https://storage.googleapis.com/git-repo-downloads/repo -o "${HOME}/bin/repo"
+          chmod +x "${HOME}/bin/repo"
+          echo "${HOME}/bin" >> "${GITHUB_PATH}"
+          export PATH="${HOME}/bin:${PATH}"
+          echo
+          echo "Repo version:"
+          repo --version
+
+      - name: Configure git
+        shell: bash
+        run: |
+          set -e
+          git config --global user.name "${GITHUB_ACTOR}"
+          git config --global user.email "${GITHUB_ACTOR_ID}+${GITHUB_ACTOR}@users.noreply.github.com"
+          git config --global color.ui false
+          git config --global protocol.version 2
+          git config --global http.postBuffer 524288000
+          git config --global http.maxRequestBuffer 100M
+          git config --global core.compression 0
+          git config --global fetch.parallel 8
+          echo
+          echo "Git configuration:"
+          git config --global --list
+
+      - name: Initialize MosaicOS
+        shell: bash
+        env:
+          MANIFEST_BRANCH: ${{ inputs.MANIFEST_BRANCH }}
+        run: |
+          set -e
+          echo "=============================================="
+          echo " Initializing MosaicOS (Android 17 / ${MANIFEST_BRANCH})"
+          echo "=============================================="
+          repo init -u https://github.com/Mosaic-OS/platform_manifest.git -b "${MANIFEST_BRANCH}" --git-lfs
+
+      - name: Install Pixel 7 build dependencies manifest
+        shell: bash
+        run: |
+          set -e
+          mkdir -p .repo/local_manifests
+
+          # MosaicOS Android 17 already carries the GrapheneOS/AOSP Pixel
+          # kernel project in its main manifest.  The old LineageOS 24
+          # override used here was mixing an Android-17 Mosaic tree with
+          # Lineage device/vendor trees and could leave the kernel layout
+          # incompatible with device/google/gs201.
+          #
+          # Keep only the Pixel vendor tree as a local dependency.  The
+          # device/google/pantah and device/google/gs201 trees come from the
+          # Android 17 source manifest/superproject.
+          cat > .repo/local_manifests/pixel7.xml <<'EOF'
+          <?xml version="1.0" encoding="UTF-8"?>
+          <manifest>
+            <project
+              name="TheMuppets/proprietary_vendor_google_panther"
+              path="vendor/google/panther"
+              revision="lineage-23.2"
+              clone-depth="1" />
+          </manifest>
+          EOF
+
+          echo "Pixel 7 local manifest:"
+          cat .repo/local_manifests/pixel7.xml
+
+          echo
+          echo "Validating XML..."
+          python3 - <<'PY'
+          import xml.etree.ElementTree as ET
+          ET.parse(".repo/local_manifests/pixel7.xml")
+          print("Manifest XML is valid.")
+          PY
+
+      - name: Sync source (pass 1)
+        if: ${{ inputs.SKIP_SYNC != 'yes' }}
+        shell: bash
+        timeout-minutes: 240
+        run: |
+          set -e
+          CPU="$(nproc --all)"
+          if [ "${CPU}" -le 2 ]; then
+            SYNC_JOBS="${CPU}"
+          elif [ "${CPU}" -le 4 ]; then
+            SYNC_JOBS=4
+          else
+            SYNC_JOBS="${CPU}"
+          fi
+          echo "CPU count : ${CPU}"
+          echo "Sync jobs : ${SYNC_JOBS}"
+          echo
+          SYNC_FLAGS=(-c --no-clone-bundle --no-tags --optimized-fetch --retry-fetches=5 -j"${SYNC_JOBS}")
+          echo
+          echo "Starting repo sync..."
+          repo sync "${SYNC_FLAGS[@]}"
+
+      - name: Resolve device dependencies (kernel, google-modules)
+        shell: bash
+        run: |
+          set -e
+          echo "=============================================="
+          echo " Resolving device dependencies via breakfast"
+          echo "=============================================="
+          source build/envsetup.sh
+          # Normalize device name for breakfast if needed
+          breakfast "${{ inputs.DEVICE_NAME }}" || true
+          if [ -f .repo/local_manifests/roomservice.xml ]; then
+            echo
+            echo "roomservice added the following manifest:"
+            cat .repo/local_manifests/roomservice.xml
+          else
+            echo
+            echo "No additional roomservice manifest was generated."
+            echo "If the kernel still fails to sync below, the lineage-24.0"
+            echo "(Android 17) branch is brand new and Pixel kernel/google-modules"
+            echo "repos for it may not exist yet. Check the device/google/pantah"
+            echo "and kernel/google/pantah repos on GitHub for their current"
+            echo "lineage-24.x tags/branches and pin them manually in"
+            echo ".repo/local_manifests/pixel7.xml if needed."
+          fi
+
+      - name: Sync source (dependencies)
+        shell: bash
+        timeout-minutes: 240
+        run: |
+          set -e
+          if [ ! -f .repo/local_manifests/roomservice.xml ]; then
+            echo "No roomservice manifest present, nothing new to sync."
+            exit 0
+          fi
+          CPU="$(nproc --all)"
+          if [ "${CPU}" -le 2 ]; then
+            SYNC_JOBS="${CPU}"
+          elif [ "${CPU}" -le 4 ]; then
+            SYNC_JOBS=4
+          else
+            SYNC_JOBS="${CPU}"
+          fi
+          echo "CPU count : ${CPU}"
+          echo "Sync jobs : ${SYNC_JOBS}"
+          echo
+          SYNC_FLAGS=(-c --no-clone-bundle --no-tags --optimized-fetch --retry-fetches=5 -j"${SYNC_JOBS}")
+          echo
+          echo "Syncing newly resolved dependencies..."
+          repo sync "${SYNC_FLAGS[@]}"
+
+      - name: Move Pixel 7 Android 17 kernel payload into the expected directory
+        shell: bash
+        run: |
+          set -e
+
+          echo "=============================================="
+          echo " Moving Pixel 7 Android 17 kernel payload"
+          echo "=============================================="
+
+          KERNEL_ROOT="device/google/pantah-kernels/6.1"
+          KERNEL_PAYLOAD="${KERNEL_ROOT}/trunk-12709428"
+
+          if [ ! -d "${KERNEL_ROOT}" ]; then
+            echo "ERROR: ${KERNEL_ROOT} does not exist."
+            exit 1
+          fi
+
+          if [ ! -d "${KERNEL_PAYLOAD}" ]; then
+            echo "ERROR: ${KERNEL_PAYLOAD} does not exist."
+            echo "The Android 17 pantah kernel repository did not provide trunk-12709428."
+            echo "Available payloads:"
+            find "${KERNEL_ROOT}" -mindepth 1 -maxdepth 1 -type d -print | sort -V
+            exit 1
+          fi
+
+          test -s "${KERNEL_PAYLOAD}/vendor_kernel_boot.modules.load"
+          test -s "${KERNEL_PAYLOAD}/vendor_dlkm.modules.load"
+
+          echo "Kernel payload found: ${KERNEL_PAYLOAD}"
+          echo "Moving its contents into: ${KERNEL_ROOT}"
+
+          # Google's gs201 BoardConfig uses TARGET_KERNEL_DIR and then reads
+          # vendor_kernel_boot.modules.load and vendor_dlkm.modules.load
+          # directly from that directory. Therefore the contents of
+          # trunk-12709428 must be placed directly in 6.1/.
+          #
+          # Do not overwrite anything already in the destination. If there is
+          # a collision, stop instead of deleting or replacing the existing file.
+          while IFS= read -r -d '' item; do
+            name="$(basename "${item}")"
+            if [ -e "${KERNEL_ROOT}/${name}" ] || [ -L "${KERNEL_ROOT}/${name}" ]; then
+              echo "ERROR: Destination already contains: ${KERNEL_ROOT}/${name}"
+              echo "No files were moved or replaced."
+              exit 1
+            fi
+          done < <(find "${KERNEL_PAYLOAD}" -mindepth 1 -maxdepth 1 -print0)
+
+          # Move the contents of trunk-12709428 directly into 6.1/. This is
+          # the location used by gs201 BoardConfig through TARGET_KERNEL_DIR.
+          find "${KERNEL_PAYLOAD}" -mindepth 1 -maxdepth 1 -exec mv -t "${KERNEL_ROOT}" -- {} +
+
+          echo
+          echo "Kernel files now present at the expected location:"
+          ls -lh "${KERNEL_ROOT}/vendor_kernel_boot.modules.load"
+          ls -lh "${KERNEL_ROOT}/vendor_dlkm.modules.load"
+
+          test -s "${KERNEL_ROOT}/vendor_kernel_boot.modules.load"
+          test -s "${KERNEL_ROOT}/vendor_dlkm.modules.load"
+
+          if [ -f "${KERNEL_ROOT}/system_dlkm.modules.load" ]; then
+            echo "system_dlkm.modules.load: OK"
+          fi
+
+          if [ -f "${KERNEL_ROOT}/Image.lz4" ]; then
+            echo "Image.lz4: OK"
+          else
+            echo "WARNING: Image.lz4 was not found at ${KERNEL_ROOT}."
+          fi
+
+          echo
+          echo "Kernel payload moved successfully."
+
+          # Keep TARGET_KERNEL_DIR pointed at the directory that now contains
+          # the module lists and kernel prebuilts.
+          PANTHER_MK="device/google/pantah/panther/device-panther.mk"
+
+          if [ ! -f "${PANTHER_MK}" ]; then
+            echo "ERROR: ${PANTHER_MK} not found."
+            exit 1
+          fi
+
+          python3 - "${PANTHER_MK}" "${KERNEL_ROOT}" <<'PY'
+          import pathlib
+          import re
+          import sys
+
+          path = pathlib.Path(sys.argv[1])
+          kernel_root = sys.argv[2]
+          text = path.read_text()
+
+          replacements = {
+              "TARGET_KERNEL_DIR": kernel_root,
+              "TARGET_BOARD_KERNEL_HEADERS": kernel_root + "/kernel-headers",
+              "TARGET_PREBUILT_KERNEL": kernel_root + "/Image.lz4",
+          }
+
+          for key, value in replacements.items():
+              pattern = rf"(?m)^(\s*{re.escape(key)}\s*:=\s*).*$"
+              if re.search(pattern, text):
+                  text = re.sub(pattern, rf"\g<1>{value}", text)
+              else:
+                  text += f"\n{key} := {value}\n"
+
+          path.write_text(text)
+          PY
+
+          echo
+          echo "Final kernel configuration:"
+          grep -nE '^(TARGET_KERNEL_DIR|TARGET_BOARD_KERNEL_HEADERS|TARGET_PREBUILT_KERNEL)' \
+            "${PANTHER_MK}" || true
+
+          echo
+          echo "Final kernel verification:"
+          test -s "${KERNEL_ROOT}/vendor_kernel_boot.modules.load"
+          test -s "${KERNEL_ROOT}/vendor_dlkm.modules.load"
+          echo "vendor_kernel_boot.modules.load: OK"
+          echo "vendor_dlkm.modules.load: OK"
+
+      - name: Install MosaicOS vendor components
+        shell: bash
+        run: |
+          set -e
+
+          echo "=============================================="
+          echo " Verifying MosaicOS components"
+          echo "=============================================="
+
+          # vendor/mosaic is supplied by the MosaicOS manifest.
+          # Do not delete or replace an existing checkout here.
+          if [ ! -d "vendor/mosaic" ]; then
+            echo "ERROR: vendor/mosaic was not synced by the MosaicOS manifest."
+            echo "Check the platform_manifest branch and repo sync output."
+            exit 1
+          fi
+
+          echo "MosaicOS vendor tree:"
+          find vendor/mosaic -maxdepth 2 -type f | head -100
+
+          echo
+          echo "MosaicOS vendor tree is present."
+
+      - name: Install optional MosaicOS ZIP components
+        shell: bash
+        run: |
+          set -e
+
+          # If a future MosaicOS/device package is supplied through the
+          # MOSAICOS_ZIP_URL repository variable, extract it and intelligently
+          # merge its Android source-tree paths.  The URL may point to a
+          # GitHub release asset or another HTTPS ZIP.
+          if [ -z "${MOSAICOS_ZIP_URL:-}" ]; then
+            echo "MOSAICOS_ZIP_URL is not set; no external ZIP is required."
+            exit 0
+          fi
+
+          command -v unzip >/dev/null 2>&1 || {
+            echo "ERROR: unzip is required for MOSAICOS_ZIP_URL."
+            exit 1
+          }
+
+          ZIP_FILE="${RUNNER_TEMP}/mosaicos-device-${GITHUB_RUN_ID}.zip"
+          EXTRACT_DIR="${RUNNER_TEMP}/mosaicos-device-${GITHUB_RUN_ID}"
+
+          echo "Downloading MosaicOS/device ZIP..."
+          curl -fL --retry 5 --retry-delay 3             "${MOSAICOS_ZIP_URL}" -o "${ZIP_FILE}"
+
+          mkdir -p "${EXTRACT_DIR}"
+          unzip -q "${ZIP_FILE}" -d "${EXTRACT_DIR}"
+
+          echo "ZIP contents:"
+          find "${EXTRACT_DIR}" -maxdepth 4 -type f | head -200
+
+          # Locate Android source-tree roots inside the ZIP.  We merge paths
+          # such as device/, vendor/, kernel/ and packages/ into the checkout
+          # rather than blindly nesting the ZIP's wrapper directory.
+          for root in device vendor kernel hardware packages system; do
+            while IFS= read -r source_root; do
+              target_root="${GITHUB_WORKSPACE}/${root}"
+              mkdir -p "${target_root}"
+              cp -a "${source_root}/." "${target_root}/"
+              echo "Merged ${source_root} -> ${target_root}"
+            done < <(find "${EXTRACT_DIR}" -type d -path "*/${root}" -print)
+          done
+
+          echo "ZIP merge complete."
+
+        env:
+          MOSAICOS_ZIP_URL: ${{ inputs.MOSAICOS_ZIP_URL }}
+
+      - name: Warn about skipped sync
+        if: ${{ inputs.SKIP_SYNC == 'yes' }}
+        shell: bash
+        run: |
+          echo "=============================================="
+          echo " WARNING: SKIP_SYNC=yes"
+          echo "=============================================="
+          echo "'Sync source (pass 1)' was skipped. This trusts that every"
+          echo "project declared in the base manifest and pixel7.xml already"
+          echo "has a complete, real git checkout at its manifest path."
+          echo "'Resolve device dependencies' and 'Sync source (dependencies)'"
+          echo "still ran normally, so the kernel/google-modules repos should"
+          echo "be up to date regardless."
+          echo
+          echo "If any project was placed manually (e.g. files copied in"
+          echo "through a file browser) rather than via 'repo sync', it will"
+          echo "be missing its .git metadata. repo won't know its revision"
+          echo "or that it satisfies the manifest, and some build steps that"
+          echo "read git info (build fingerprint/incremental version, etc.)"
+          echo "may fail or produce incorrect values."
+          echo
+          echo "Sanity-checking with 'repo status' now (non-fatal):"
+          repo status || echo "repo status reported issues (see above)."
+
+      - name: Verify source tree
+        shell: bash
+        run: |
+          set -e
+          echo "=============================================="
+          echo " Verifying source tree"
+          echo "=============================================="
+          test -d build
+          test -d device/google/pantah
+          test -d device/google/gs201
+          test -d device/google/pantah-kernels/6.1
+          test -s device/google/pantah-kernels/6.1/vendor_kernel_boot.modules.load
+          test -s device/google/pantah-kernels/6.1/vendor_dlkm.modules.load
+          test -d vendor/mosaic
+          test -d vendor/google/panther
+          echo
+          echo "Required directories and kernel module lists found."
+          echo
+          echo "Device tree:"
+          ls -la device/google/pantah | head -30
+          echo
+          echo "Vendor tree:"
+          ls -la vendor/google/panther | head -30
+
+      - name: Setup Android build environment
+        shell: bash
+        run: |
+          set -e
+          echo "=============================================="
+          echo " Android build environment"
+          echo "=============================================="
+          source build/envsetup.sh
+
+          echo "Kernel state before lunch:"
+          KERNEL_ROOT="device/google/pantah-kernels/6.1"
+          test -s "${KERNEL_ROOT}/vendor_kernel_boot.modules.load"
+          test -s "${KERNEL_ROOT}/vendor_dlkm.modules.load"
+          echo "  ${KERNEL_ROOT}/vendor_kernel_boot.modules.load: OK"
+          echo "  ${KERNEL_ROOT}/vendor_dlkm.modules.load: OK"
+
+          # Normalize product name for lunch if needed.
+          lunch "${{ inputs.PRODUCT_NAME }}"
+
+
+      - name: Build ROM
+        shell: bash
+        timeout-minutes: 720
+        env:
+          DEVICE_NAME: ${{ inputs.DEVICE_NAME }}
+          PRODUCT_NAME: ${{ inputs.PRODUCT_NAME }}
+          BUILD_COMMAND: ${{ inputs.BUILD_COMMAND }}
+          MANIFEST_BRANCH: ${{ inputs.MANIFEST_BRANCH }}
+        run: |
+          set -e
+          echo "=============================================="
+          echo " MosaicOS"
+          echo " Pixel 7 / Panther (pantah)"
+          echo " Android 17 / ${MANIFEST_BRANCH}"
+          echo " Linux AMD64"
+          echo "=============================================="
+          echo "Device : ${DEVICE_NAME}"
+          echo "Product: ${PRODUCT_NAME}"
+          echo "Build  : ${BUILD_COMMAND}"
+          echo
+          echo "CPU:"
+          nproc --all
+          echo
+          echo "Memory:"
+          free -h
+          echo
+          echo "Disk:"
+          df -h
+          echo
+          echo "=============================================="
+          export BUILD_USERNAME="${GITHUB_ACTOR}"
+          export BUILD_HOSTNAME="github-actions-amd64"
+          source build/envsetup.sh
+          # Normalize product name for lunch if needed
+          lunch "${PRODUCT_NAME}"
+          echo
+          echo "Build variables:"
+          echo "DEVICE_NAME=${DEVICE_NAME}"
+          echo "PRODUCT_NAME=${PRODUCT_NAME}"
+          echo "BUILD_COMMAND=${BUILD_COMMAND}"
+          echo "MANIFEST_BRANCH=${MANIFEST_BRANCH}"
+          echo
+          echo "=============================================="
+          echo " Starting ROM build"
+          echo "=============================================="
+          bash -c "${BUILD_COMMAND}"
+
+      - name: Locate build artifacts
+        if: always()
+        shell: bash
+        run: |
+          echo "=============================================="
+          echo " Build artifacts"
+          echo "=============================================="
+          OUT_DIR="out/target/product/${DEVICE_NAME}"
+          echo "Output directory:"
+          echo "${OUT_DIR}"
+          if [ -d "${OUT_DIR}" ]; then
+            echo
+            echo "Files:"
+            find "${OUT_DIR}" -maxdepth 2 -type f \( -name "*.zip" -o -name "*.img" -o -name "*.apk" -o -name "*.json" -o -name "*.txt" \) -print || true
+            echo
+            echo "Output directory size:"
+            du -sh "${OUT_DIR}" 2>/dev/null || true
+          else
+            echo "Output directory does not exist."
+          fi
+
+      - name: Upload ROM artifacts
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: mosaicos-${{ inputs.DEVICE_NAME }}-android17-build
+          retention-days: 7
+          if-no-files-found: warn
+          path: |
+            out/target/product/${{ inputs.DEVICE_NAME }}/*.zip
+            out/target/product/${{ inputs.DEVICE_NAME }}/*.img
+            out/target/product/${{ inputs.DEVICE_NAME }}/*boot*.img
+            out/target/product/${{ inputs.DEVICE_NAME }}/*vendor*.img
+            out/target/product/${{ inputs.DEVICE_NAME }}/*.json
+
+      - name: Show final disk usage
+        if: always()
+        shell: bash
+        run: |
+          echo "=============================================="
+          echo " Final disk usage"
+          echo "=============================================="
+          df -h
