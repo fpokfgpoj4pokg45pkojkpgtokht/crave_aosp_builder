@@ -31,6 +31,14 @@ on:
         options:
           - "no"
           - "yes"
+      SKIP_SYNC:
+        description: "Skip both 'repo sync' steps entirely. Only use this if you are certain every project in the manifest already has a real, complete git checkout (not just files copied in manually) — repo sync also does integrity/consistency checks that this will bypass."
+        required: true
+        default: "no"
+        type: choice
+        options:
+          - "no"
+          - "yes"
       CLEAN_BUILD:
         description: "Clean build? Warning: this is slower."
         required: true
@@ -209,6 +217,7 @@ jobs:
           PY
 
       - name: Sync source (pass 1)
+        if: ${{ inputs.SKIP_SYNC != 'yes' }}
         shell: bash
         timeout-minutes: 240
         env:
@@ -241,6 +250,7 @@ jobs:
           repo sync "${SYNC_FLAGS[@]}"
 
       - name: Resolve device dependencies (kernel, google-modules)
+        if: ${{ inputs.SKIP_SYNC != 'yes' }}
         shell: bash
         run: |
           set -e
@@ -266,8 +276,11 @@ jobs:
           fi
 
       - name: Sync source (dependencies)
+        if: ${{ inputs.SKIP_SYNC != 'yes' }}
         shell: bash
         timeout-minutes: 240
+        env:
+          FORCE_RESYNC: ${{ inputs.FORCE_RESYNC }}
         run: |
           set -e
           if [ ! -f .repo/local_manifests/roomservice.xml ]; then
@@ -285,8 +298,13 @@ jobs:
           echo "CPU count : ${CPU}"
           echo "Sync jobs : ${SYNC_JOBS}"
           echo
+          SYNC_FLAGS=(-c --no-clone-bundle --no-tags --optimized-fetch --retry-fetches=5 -j"${SYNC_JOBS}")
+          if [ "${FORCE_RESYNC}" = "yes" ]; then
+            SYNC_FLAGS+=(--force-sync --prune)
+          fi
+          echo
           echo "Syncing newly resolved dependencies..."
-          repo sync -c --force-sync --no-clone-bundle --no-tags --optimized-fetch --prune --retry-fetches=5 -j"${SYNC_JOBS}"
+          repo sync "${SYNC_FLAGS[@]}"
 
       - name: Verify source tree
         shell: bash
