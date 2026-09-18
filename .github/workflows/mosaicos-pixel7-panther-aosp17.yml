@@ -1,4 +1,4 @@
-name: MosaicOS Pixel 7 Build (Android 17)
+name: MosaicOS Pixel 7 Builder (Android 17)
 
 on:
   workflow_dispatch:
