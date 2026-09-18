@@ -32,7 +32,7 @@ on:
           - "no"
           - "yes"
       SKIP_SYNC:
-        description: "Skip both 'repo sync' steps entirely. Only use this if you are certain every project in the manifest already has a real, complete git checkout (not just files copied in manually) — repo sync also does integrity/consistency checks that this will bypass."
+        description: "Skip only the 'Sync source (pass 1)' step. 'Resolve device dependencies' and 'Sync source (dependencies)' still run as normal. Only use this if you are certain every project in the base manifest already has a real, complete git checkout (not just files copied in manually)."
         required: true
         default: "no"
         type: choice
@@ -250,7 +250,6 @@ jobs:
           repo sync "${SYNC_FLAGS[@]}"
 
       - name: Resolve device dependencies (kernel, google-modules)
-        if: ${{ inputs.SKIP_SYNC != 'yes' }}
         shell: bash
         run: |
           set -e
@@ -276,7 +275,6 @@ jobs:
           fi
 
       - name: Sync source (dependencies)
-        if: ${{ inputs.SKIP_SYNC != 'yes' }}
         shell: bash
         timeout-minutes: 240
         env:
@@ -305,6 +303,30 @@ jobs:
           echo
           echo "Syncing newly resolved dependencies..."
           repo sync "${SYNC_FLAGS[@]}"
+
+      - name: Warn about skipped sync
+        if: ${{ inputs.SKIP_SYNC == 'yes' }}
+        shell: bash
+        run: |
+          echo "=============================================="
+          echo " WARNING: SKIP_SYNC=yes"
+          echo "=============================================="
+          echo "'Sync source (pass 1)' was skipped. This trusts that every"
+          echo "project declared in the base manifest and pixel7.xml already"
+          echo "has a complete, real git checkout at its manifest path."
+          echo "'Resolve device dependencies' and 'Sync source (dependencies)'"
+          echo "still ran normally, so the kernel/google-modules repos should"
+          echo "be up to date regardless."
+          echo
+          echo "If any project was placed manually (e.g. files copied in"
+          echo "through a file browser) rather than via 'repo sync', it will"
+          echo "be missing its .git metadata. repo won't know its revision"
+          echo "or that it satisfies the manifest, and some build steps that"
+          echo "read git info (build fingerprint/incremental version, etc.)"
+          echo "may fail or produce incorrect values."
+          echo
+          echo "Sanity-checking with 'repo status' now (non-fatal):"
+          repo status || echo "repo status reported issues (see above)."
 
       - name: Verify source tree
         shell: bash
