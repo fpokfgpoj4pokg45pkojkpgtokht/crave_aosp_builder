@@ -1,14 +1,4 @@
 
-#
-# Lunaris-AOSP 16.2 GSI Build
-# Based on:
-# https://github.com/fpokfgpoj4pokg45pkojkpgtokht/crave_aosp_builder
-#
-# GSI source/reference:
-# https://github.com/Doze-off/Lunaris-AOSP_gsi
-#
-# SPDX-License-Identifier: Apache-2.0
-#
 
 name: Lunaris-AOSP 16.2 - GSI Build
 
