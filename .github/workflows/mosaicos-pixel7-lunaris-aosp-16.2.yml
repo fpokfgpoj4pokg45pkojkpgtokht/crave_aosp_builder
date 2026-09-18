@@ -1,300 +1,425 @@
-name: MosaicOS Pixel 7 Build (Android 17)
+
+#
+# Lunaris-AOSP 16.2 GSI Build
+# Based on:
+# https://github.com/fpokfgpoj4pokg45pkojkpgtokht/crave_aosp_builder
+#
+# GSI source/reference:
+# https://github.com/Doze-off/Lunaris-AOSP_gsi
+#
+# SPDX-License-Identifier: Apache-2.0
+#
+
+name: Lunaris-AOSP 16.2 - GSI Build
 
 on:
   workflow_dispatch:
     inputs:
-      DEVICE_NAME:
-        description: "Device codename"
-        required: true
-        default: "panther"
-        type: string
-      PRODUCT_NAME:
-        description: "Lunch target"
-        required: true
-        default: "lunaris_panther-userdebug"
-        type: string
-      BUILD_COMMAND:
-        description: "Build command"
-        required: true
-        default: "m bacon"
-        type: string
       LUNARIS_BRANCH:
         description: "Lunaris-AOSP branch"
         required: true
         default: "16.2"
         type: string
+
+      BUILD_COMMAND:
+        description: "Build command"
+        required: true
+        default: "m systemimage"
+        type: string
+
       CLEAN_BUILD:
         description: "Clean build output before building?"
         required: true
         default: "no"
         type: choice
-        options: ["no", "yes"]
+        options:
+          - "no"
+          - "yes"
 
 permissions:
   contents: read
 
 concurrency:
-  group: lunaris-panther-build
+  group: lunaris-gsi-16.2
   cancel-in-progress: false
 
 jobs:
   build:
-    name: Build MosaicOS - Pixel 7 (Android 17)
+    name: Build Lunaris-AOSP 16.2 GSI
     runs-on: self-hosted
     timeout-minutes: 99999
+
     permissions:
       contents: read
 
     steps:
+
+      # ------------------------------------------------------------
+      # CHECKOUT WORKFLOW REPOSITORY
+      # ------------------------------------------------------------
+
       - name: Checkout workflow repository
         uses: actions/checkout@v4
         with:
           clean: false
 
+      # ------------------------------------------------------------
+      # RUNNER INFORMATION
+      # ------------------------------------------------------------
+
       - name: Show runner information
         shell: bash
         run: |
           set -e
+
+          echo "=============================================="
+          echo "Lunaris-AOSP GSI Build"
+          echo "=============================================="
+
           echo "Hostname: $(hostname)"
           echo "User: $(whoami)"
           echo "Architecture: $(uname -m)"
           echo "CPU count: $(nproc --all)"
+
+          echo
+          echo "Memory:"
           free -h
+
+          echo
+          echo "Disk:"
           df -h
+
+      # ------------------------------------------------------------
+      # VERIFY AMD64/X86_64 RUNNER
+      # ------------------------------------------------------------
+
+      - name: Verify amd64 runner
+        shell: bash
+        run: |
+          set -e
+
+          ARCH="$(uname -m)"
+
+          echo "Detected architecture: ${ARCH}"
+
+          if [ "${ARCH}" != "x86_64" ]; then
+            echo "ERROR: This workflow requires an amd64/x86_64 runner."
+            exit 1
+          fi
+
+          echo "amd64/x86_64 runner confirmed."
+
+      # ------------------------------------------------------------
+      # BUILD DEPENDENCIES
+      # ------------------------------------------------------------
 
       - name: Install Android build dependencies
         shell: bash
         run: |
           set -e
+
           export DEBIAN_FRONTEND=noninteractive
-          REQUIRED_CMDS="adb bc bison gcc g++ ccache curl flex gperf convert git git-lfs gpg lz4 lzop python3 pip3 rsync schedtool mksquashfs unzip xsltproc zip"
+
+          REQUIRED_CMDS="
+            adb
+            bc
+            bison
+            gcc
+            g++
+            ccache
+            curl
+            flex
+            gperf
+            convert
+            git
+            git-lfs
+            gpg
+            lz4
+            lzop
+            python3
+            pip3
+            rsync
+            schedtool
+            mksquashfs
+            unzip
+            xsltproc
+            zip
+          "
+
           MISSING=""
+
           for cmd in ${REQUIRED_CMDS}; do
-            command -v "${cmd}" >/dev/null 2>&1 || MISSING="${MISSING} ${cmd}"
+            command -v "${cmd}" >/dev/null 2>&1 || \
+              MISSING="${MISSING} ${cmd}"
           done
+
           if [ -z "${MISSING}" ]; then
-            echo "Required build tools already installed."
+            echo "All required build tools are already installed."
           else
-            if [ "$(id -u)" -ne 0 ] && ! apt-get update >/tmp/apt_probe.log 2>&1; then
-              echo "ERROR: Missing tools require apt-get, but the runner has no usable apt privileges."
-              cat /tmp/apt_probe.log
-              exit 1
+            echo "Missing:${MISSING}"
+
+            if [ "$(id -u)" -ne 0 ]; then
+              echo "Checking apt permissions..."
+
+              if ! apt-get update >/tmp/apt_probe.log 2>&1; then
+                echo
+                echo "ERROR: Missing packages require apt."
+                echo "The self-hosted runner does not have usable apt privileges."
+                echo
+                cat /tmp/apt_probe.log
+                exit 1
+              fi
             fi
+
             apt-get update
-            apt-get install -y adb bc bison build-essential ccache curl flex g++ git git-lfs gnupg gperf imagemagick libelf-dev libncurses-dev libssl-dev libxml2-utils lz4 lzop python3 python3-pip python3-venv rsync schedtool squashfs-tools unzip xsltproc zip zlib1g-dev
+
+            apt-get install -y \
+              adb \
+              bc \
+              bison \
+              build-essential \
+              ccache \
+              curl \
+              flex \
+              g++ \
+              git \
+              git-lfs \
+              gnupg \
+              gperf \
+              imagemagick \
+              libelf-dev \
+              libncurses-dev \
+              libssl-dev \
+              libxml2-utils \
+              lz4 \
+              lzop \
+              python3 \
+              python3-pip \
+              python3-venv \
+              rsync \
+              schedtool \
+              squashfs-tools \
+              unzip \
+              xsltproc \
+              zip \
+              zlib1g-dev
           fi
+
           git lfs install --skip-repo
+
+      # ------------------------------------------------------------
+      # REPO TOOL
+      # ------------------------------------------------------------
 
       - name: Install repo tool
         shell: bash
         run: |
           set -e
+
           mkdir -p "${HOME}/bin"
-          curl -fsSL https://storage.googleapis.com/git-repo-downloads/repo -o "${HOME}/bin/repo"
+
+          curl -fsSL \
+            https://storage.googleapis.com/git-repo-downloads/repo \
+            -o "${HOME}/bin/repo"
+
           chmod +x "${HOME}/bin/repo"
+
           echo "${HOME}/bin" >> "${GITHUB_PATH}"
+
           export PATH="${HOME}/bin:${PATH}"
+
           repo --version
 
-      - name: Configure Git for GitHub sources
+      # ------------------------------------------------------------
+      # GIT CONFIGURATION
+      # ------------------------------------------------------------
+
+      - name: Configure Git
         shell: bash
         run: |
           set -e
+
           git config --global user.name "${GITHUB_ACTOR}"
-          git config --global user.email "${GITHUB_ACTOR_ID}+${GITHUB_ACTOR}@users.noreply.github.com"
+
+          git config --global user.email \
+            "${GITHUB_ACTOR_ID}+${GITHUB_ACTOR}@users.noreply.github.com"
+
           git config --global protocol.version 2
+
           git config --global fetch.parallel 8
+
           git config --global lfs.concurrenttransfers 4
 
-      - name: Initialize Lunaris AOSP manifest metadata
+      # ------------------------------------------------------------
+      # INITIALIZE LUNARIS
+      # ------------------------------------------------------------
+
+      - name: Initialize Lunaris AOSP
         shell: bash
         env:
           LUNARIS_BRANCH: ${{ inputs.LUNARIS_BRANCH }}
         run: |
           set -e
+
           export PATH="${HOME}/bin:${PATH}"
-          echo "Initializing Lunaris AOSP branch ${LUNARIS_BRANCH}"
-          repo init -u https://github.com/Lunaris-AOSP/android -b "${LUNARIS_BRANCH}" --git-lfs
 
-      - name: Verify persistent Lunaris base tree
+          echo "=============================================="
+          echo "Initializing Lunaris-AOSP"
+          echo "Branch: ${LUNARIS_BRANCH}"
+          echo "=============================================="
+
+          repo init \
+            -u https://github.com/Lunaris-AOSP/android \
+            -b "${LUNARIS_BRANCH}" \
+            --git-lfs
+
+      # ------------------------------------------------------------
+      # SYNC SOURCE TREE
+      # ------------------------------------------------------------
+
+      - name: Sync Lunaris AOSP source
+        shell: bash
+        timeout-minutes: 1440
+        run: |
+          set -e
+
+          export PATH="${HOME}/bin:${PATH}"
+
+          echo "=============================================="
+          echo "Synchronizing Lunaris source"
+          echo "=============================================="
+
+          repo sync \
+            -c \
+            -j"$(nproc --all)" \
+            --force-sync \
+            --no-clone-bundle \
+            --no-tags \
+            --optimized-fetch
+
+      # ------------------------------------------------------------
+      # VERIFY SOURCE
+      # ------------------------------------------------------------
+
+      - name: Verify Lunaris source tree
         shell: bash
         run: |
           set -e
-          test -f build/envsetup.sh || {
-            echo "ERROR: build/envsetup.sh is missing."
-            echo "The persistent Lunaris AOSP source tree must be bootstrapped once before this targeted workflow can build."
-            exit 1
-          }
-          echo "Persistent Lunaris AOSP base tree is available."
 
-      - name: Overwrite Pixel 7 repositories from GitHub
-        shell: bash
-        timeout-minutes: 240
-        env:
-          LUNARIS_BRANCH: ${{ inputs.LUNARIS_BRANCH }}
-        run: |
-          set -euo pipefail
+          test -f build/envsetup.sh
 
-          replace_checkout() {
-            local path="$1"
-            local url="$2"
-            local branch="$3"
-            local old_path="${path}.old-for-replacement"
+          echo
+          echo "Lunaris source tree detected."
 
-            echo "=============================================="
-            echo "Project path : ${path}"
-            echo "Remote URL   : ${url}"
-            echo "Branch       : ${branch}"
-            echo "=============================================="
+          echo
+          echo "Source directory:"
+          pwd
 
-            rm -rf "${old_path}"
-            if [ -e "${path}" ]; then
-              mv "${path}" "${old_path}"
-            fi
+          echo
+          echo "Build system:"
+          ls -lh build/envsetup.sh
 
-            mkdir -p "$(dirname "${path}")"
-            if ! git clone --depth=1 --branch "${branch}" "${url}" "${path}"; then
-              echo "Clone failed; restoring the previous directory."
-              rm -rf "${path}"
-              if [ -e "${old_path}" ]; then
-                mv "${old_path}" "${path}"
-              fi
-              exit 1
-            fi
+      # ------------------------------------------------------------
+      # FETCH DOZE-OFF GSI REPOSITORY
+      #
+      # IMPORTANT:
+      # This repository is NOT the Android source tree.
+      # It is the official GSI repository/reference containing
+      # the Doze-off GSI information and TrebleDroid integration.
+      # ------------------------------------------------------------
 
-            rm -rf "${old_path}"
-            git -C "${path}" lfs pull || true
-            echo "Verified origin: $(git -C "${path}" remote get-url origin)"
-            echo "Checked-out commit: $(git -C "${path}" rev-parse --short HEAD)"
-          }
-
-          # Keep Pixel 7 device-specific projects on GitHub. Branch 16.2 is
-          # tried first for Lunaris forks; the fallback preserves compatibility
-          # with the upstream LineageOS Android 17 device branch.
-          clone_lunaris_or_lineage() {
-            local path="$1"
-            local lunaris_repo="$2"
-            local upstream_repo="$3"
-
-            if git ls-remote --exit-code --heads "${lunaris_repo}" "${LUNARIS_BRANCH}" >/dev/null 2>&1; then
-              replace_checkout "${path}" "${lunaris_repo}" "${LUNARIS_BRANCH}"
-            else
-              echo "No Lunaris branch ${LUNARIS_BRANCH} found for ${lunaris_repo}; using upstream lineage-24.0."
-              replace_checkout "${path}" "${upstream_repo}" "lineage-24.0"
-            fi
-          }
-
-          clone_lunaris_or_lineage \
-            "device/google/pantah" \
-            "https://github.com/Lunaris-AOSP/android_device_google_pantah.git" \
-            "https://github.com/LineageOS/android_device_google_pantah.git"
-
-          clone_lunaris_or_lineage \
-            "device/google/gs201" \
-            "https://github.com/Lunaris-AOSP/android_device_google_gs201.git" \
-            "https://github.com/LineageOS/android_device_google_gs201.git"
-
-          clone_lunaris_or_lineage \
-            "vendor/google/panther" \
-            "https://github.com/Lunaris-AOSP/proprietary_vendor_google_panther.git" \
-            "https://github.com/TheMuppets/proprietary_vendor_google_panther.git"
-
-          # This exact Android Pantah prebuilt repository provides the required
-          # module list consumed by the gs201 BoardConfig.
-          replace_checkout \
-            "device/google/pantah-kernels/6.1" \
-            "https://android.googlesource.com/device/google/pantah-kernels/6.1" \
-            "android15-qpr2-release"
-
-      - name: Select and expose Pantah kernel module list
-        shell: bash
-        run: |
-          set -euo pipefail
-          KERNEL_ROOT="device/google/pantah-kernels/6.1"
-          MODULE_LIST="vendor_kernel_boot.modules.load"
-          PREFERRED_PAYLOAD="${KERNEL_ROOT}/trunk-12709428"
-
-          test -f device/google/pantah/panther/BoardConfig.mk
-          test -f device/google/gs201/BoardConfig-common.mk
-          test -f vendor/google/panther/BoardConfigVendor.mk
-          test -d "${KERNEL_ROOT}"
-
-          if [ -s "${PREFERRED_PAYLOAD}/${MODULE_LIST}" ]; then
-            KERNEL_PAYLOAD="${PREFERRED_PAYLOAD}"
-          else
-            KERNEL_PAYLOAD="$(find "${KERNEL_ROOT}" -mindepth 2 -maxdepth 2 -type f -name "${MODULE_LIST}" -size +0c -printf '%h\n' | sort | tail -n 1)"
-          fi
-
-          if [ -z "${KERNEL_PAYLOAD:-}" ] || [ ! -s "${KERNEL_PAYLOAD}/${MODULE_LIST}" ]; then
-            echo "ERROR: No usable ${MODULE_LIST} was found under ${KERNEL_ROOT}."
-            find "${KERNEL_ROOT}" -mindepth 1 -maxdepth 1 -type d -printf '  - %f\n' | sort || true
-            exit 1
-          fi
-
-          echo "Selected kernel payload: ${KERNEL_PAYLOAD}"
-          cp -f "${KERNEL_PAYLOAD}/${MODULE_LIST}" "${KERNEL_ROOT}/${MODULE_LIST}"
-          test -s "${KERNEL_ROOT}/${MODULE_LIST}"
-          echo "Exposed: ${KERNEL_ROOT}/${MODULE_LIST}"
-
-      - name: Setup Android build environment
+      - name: Fetch Doze-off Lunaris GSI repository
         shell: bash
         run: |
           set -e
+
+          rm -rf .dozeoff-lunaris-gsi
+
+          git clone \
+            --depth=1 \
+            https://github.com/Doze-off/Lunaris-AOSP_gsi.git \
+            .dozeoff-lunaris-gsi
+
+          echo
+          echo "Doze-off repository:"
+          git -C .dozeoff-lunaris-gsi log -1 --oneline
+
+          echo
+          echo "Files:"
+          find .dozeoff-lunaris-gsi \
+            -maxdepth 2 \
+            -type f \
+            -print
+
+      # ------------------------------------------------------------
+      # CHECK GSI TARGETS
+      # ------------------------------------------------------------
+
+      - name: Inspect available GSI targets
+        shell: bash
+        run: |
+          set -e
+
           source build/envsetup.sh
-          lunch "${{ inputs.PRODUCT_NAME }}"
 
-      - name: Optional clean build
-        if: ${{ inputs.CLEAN_BUILD == 'yes' }}
+          echo "=============================================="
+          echo "Searching for GSI targets"
+          echo "=============================================="
+
+          lunch --help 2>/dev/null || true
+
+          echo
+          echo "Potential GSI products:"
+
+          find device -type f \
+            \( -name "*gsi*.mk" -o -name "*treble*.mk" \) \
+            -print 2>/dev/null | head -100 || true
+
+          echo
+          echo "Available lunch targets containing GSI/Treble:"
+
+          lunch 2>&1 | \
+            grep -Ei "gsi|treble" | \
+            head -100 || true
+
+      # ------------------------------------------------------------
+      # SELECT GENERIC ARM64 GSI
+      #
+      # We deliberately do NOT use:
+      #   lunaris_panther-userdebug
+      #
+      # because this workflow is building a generic system image.
+      # ------------------------------------------------------------
+
+      - name: Select generic arm64 GSI target
         shell: bash
         run: |
           set -e
-          rm -rf out
-          echo "Build output cleaned."
 
-      - name: Build ROM
-        shell: bash
-        timeout-minutes: 720
-        env:
-          PRODUCT_NAME: ${{ inputs.PRODUCT_NAME }}
-          BUILD_COMMAND: ${{ inputs.BUILD_COMMAND }}
-        run: |
-          set -e
-          export BUILD_USERNAME="${GITHUB_ACTOR}"
-          export BUILD_HOSTNAME="github-actions-arm64"
           source build/envsetup.sh
-          lunch "${PRODUCT_NAME}"
-          bash -c "${BUILD_COMMAND}"
 
-      - name: Locate build artifacts
-        if: always()
-        shell: bash
-        env:
-          DEVICE_NAME: ${{ inputs.DEVICE_NAME }}
-        run: |
-          OUT_DIR="out/target/product/${DEVICE_NAME}"
-          echo "Output directory: ${OUT_DIR}"
-          if [ -d "${OUT_DIR}" ]; then
-            find "${OUT_DIR}" -maxdepth 2 -type f \( -name "*.zip" -o -name "*.img" -o -name "*.apk" -o -name "*.json" -o -name "*.txt" \) -print || true
-            du -sh "${OUT_DIR}" 2>/dev/null || true
-          else
-            echo "Output directory does not exist."
-          fi
+          echo "=============================================="
+          echo "Selecting GSI target"
+          echo "=============================================="
 
-      - name: Upload ROM artifacts
-        if: success()
-        uses: actions/upload-artifact@v4
-        with:
-          name: mosaicos-${{ inputs.DEVICE_NAME }}-android17-build
-          retention-days: 7
-          if-no-files-found: warn
-          path: |
-            out/target/product/${{ inputs.DEVICE_NAME }}/*.zip
-            out/target/product/${{ inputs.DEVICE_NAME }}/*.img
-            out/target/product/${{ inputs.DEVICE_NAME }}/*boot*.img
-            out/target/product/${{ inputs.DEVICE_NAME }}/*vendor*.img
-            out/target/product/${{ inputs.DEVICE_NAME }}/*.json
+          TARGET=""
 
-      - name: Show final disk usage
-        if: always()
-        shell: bash
-        run: df -h
+          for candidate in \
+            "aosp_arm64-userdebug" \
+            "aosp_arm64-user" \
+            "lineage_arm64-userdebug" \
+            "lineage_arm64-user"
+          do
+            if lunch "${candidate}" >/tmp/lunch-test.log 2>&1; then
+              TARGET="${candidate}"
+              echo "Selected target: ${TARGET}"
+              break
+            fi
+
+            cat /tmp/lunch-test.log || true
+          done
+
+          if [ -z "${TARGET}" ]; then
+            echo
+            echo "ERROR: Could not find a generic arm64
+```
