@@ -1,5 +1,4 @@
 
-
 name: Lunaris-AOSP 16.2 - GSI Build
 
 on:
@@ -412,4 +411,3 @@ jobs:
           if [ -z "${TARGET}" ]; then
             echo
             echo "ERROR: Could not find a generic arm64
-```
