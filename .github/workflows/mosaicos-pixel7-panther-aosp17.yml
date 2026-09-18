@@ -154,7 +154,7 @@ jobs:
           echo "=============================================="
           echo " Initializing MosaicOS (Android 17 / ${MANIFEST_BRANCH})"
           echo "=============================================="
-          repo init -u https://github.com/MosaicOS-Project/android.git -b "${MANIFEST_BRANCH}" --git-lfs
+          repo init -u https://github.com/Mosaic-OS/platform_manifest.git -b "${MANIFEST_BRANCH}" --git-lfs
 
       - name: Install Pixel 7 manifest
         shell: bash
