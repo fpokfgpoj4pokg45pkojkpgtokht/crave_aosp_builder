@@ -72,30 +72,7 @@ jobs:
           df -h
           echo
           echo "=============================================="
-
-      - name: Free disk space
-        shell: bash
-        run: |
-          set -e
-          echo "Disk before cleanup:"
-          df -h
-          echo
-          echo "Cleaning package cache..."
-          sudo apt-get clean || true
-          sudo rm -rf /var/lib/apt/lists/* || true
-          echo
-          echo "Cleaning temporary files..."
-          sudo rm -rf /tmp/* || true
-          echo
-          echo "Cleaning GitHub Actions leftovers..."
-          sudo rm -rf /opt/hostedtoolcache/* || true
-          sudo rm -rf /opt/ghc/* || true
-          sudo rm -rf /usr/local/lib/android/* || true
-          sudo rm -rf /usr/share/dotnet/* || true
-          sudo rm -rf /usr/local/share/powershell/* || true
-          echo
-          echo "Disk after cleanup:"
-          df -h
+          
 
       - name: Install Android build dependencies
         shell: bash
