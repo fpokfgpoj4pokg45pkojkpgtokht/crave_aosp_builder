@@ -23,6 +23,14 @@ on:
         required: true
         default: "17"
         type: string
+      FORCE_RESYNC:
+        description: "Force-reset every project to remote state (slower, discards any local changes/dirty checkouts). Leave 'no' for normal incremental syncs that only touch missing/changed projects."
+        required: true
+        default: "no"
+        type: choice
+        options:
+          - "no"
+          - "yes"
       CLEAN_BUILD:
         description: "Clean build? Warning: this is slower."
         required: true
@@ -203,6 +211,8 @@ jobs:
       - name: Sync source (pass 1)
         shell: bash
         timeout-minutes: 240
+        env:
+          FORCE_RESYNC: ${{ inputs.FORCE_RESYNC }}
         run: |
           set -e
           CPU="$(nproc --all)"
@@ -216,8 +226,19 @@ jobs:
           echo "CPU count : ${CPU}"
           echo "Sync jobs : ${SYNC_JOBS}"
           echo
+          SYNC_FLAGS=(-c --no-clone-bundle --no-tags --optimized-fetch --retry-fetches=5 -j"${SYNC_JOBS}")
+          if [ "${FORCE_RESYNC}" = "yes" ]; then
+            echo "FORCE_RESYNC=yes: resetting every project to remote state."
+            SYNC_FLAGS+=(--force-sync --prune)
+          else
+            echo "FORCE_RESYNC=no: incremental sync. Projects already up to date"
+            echo "will only be checked, not re-downloaded or rewritten; only"
+            echo "missing or changed projects (e.g. a newly added subproject"
+            echo "under an already-synced path) will actually be fetched."
+          fi
+          echo
           echo "Starting repo sync..."
-          repo sync -c --force-sync --no-clone-bundle --no-tags --optimized-fetch --prune --retry-fetches=5 -j"${SYNC_JOBS}"
+          repo sync "${SYNC_FLAGS[@]}"
 
       - name: Resolve device dependencies (kernel, google-modules)
         shell: bash
