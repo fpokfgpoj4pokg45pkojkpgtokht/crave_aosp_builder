@@ -59,7 +59,7 @@ jobs:
   build:
     name: Build MosaicOS - Pixel 7 (Android 17)
     runs-on: self-hosted
-    timeout-minutes: 99999
+    timeout-minutes: 9999
     permissions:
       contents: read
     steps:
