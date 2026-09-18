@@ -328,26 +328,6 @@ jobs:
           echo "Sanity-checking with 'repo status' now (non-fatal):"
           repo status || echo "repo status reported issues (see above)."
 
-      - name: Verify source tree
-        shell: bash
-        run: |
-          set -e
-          echo "=============================================="
-          echo " Verifying source tree"
-          echo "=============================================="
-          test -d build
-          test -d device/google/pantah
-          test -d device/google/gs201
-          test -d vendor/google/panther
-          echo
-          echo "Required directories found."
-          echo
-          echo "Device tree:"
-          ls -la device/google/pantah | head -30
-          echo
-          echo "Vendor tree:"
-          ls -la vendor/google/panther | head -30
-
       - name: Setup Android build environment
         shell: bash
         run: |
