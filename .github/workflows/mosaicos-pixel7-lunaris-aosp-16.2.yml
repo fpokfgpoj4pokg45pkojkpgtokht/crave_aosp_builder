@@ -125,12 +125,42 @@ jobs:
         shell: bash
         run: |
           set -e
-          test -f build/envsetup.sh || {
-            echo "ERROR: build/envsetup.sh is missing."
-            echo "The persistent Lunaris AOSP source tree must be bootstrapped once before this targeted workflow can build."
+          export PATH="${HOME}/bin:${PATH}"
+
+          if [ -f build/envsetup.sh ]; then
+            echo "Persistent Lunaris AOSP base tree is available."
+            exit 0
+          fi
+
+          echo "build/envsetup.sh did not resolve to a readable file."
+
+          # build/envsetup.sh is a symlink into the "build/make" project
+          # (build/envsetup.sh -> ../build/make/envsetup.sh). If build/make
+          # never synced, the symlink exists but is broken, and a plain
+          # `test -f` reports it as missing.
+          if [ -L build/envsetup.sh ]; then
+            echo "It exists as a symlink, but the target is missing:"
+            ls -la build/envsetup.sh || true
+            readlink -f build/envsetup.sh || true
+          fi
+
+          if [ -d .repo ]; then
+            echo
+            echo "Attempting to repair by syncing build/soong and build/make..."
+            repo sync -c --no-clone-bundle --no-tags --optimized-fetch --retry-fetches=5 build/soong build/make || true
+          else
+            echo "No .repo directory found here; this runner has no repo-managed tree at all."
+          fi
+
+          if [ -f build/envsetup.sh ]; then
+            echo
+            echo "Repair succeeded; build/envsetup.sh now resolves."
+          else
+            echo
+            echo "ERROR: build/envsetup.sh is still missing or broken after the repair attempt."
+            echo "The persistent Lunaris AOSP source tree needs a full 'repo init' + 'repo sync' at least once before this targeted workflow can build."
             exit 1
-          }
-          echo "Persistent Lunaris AOSP base tree is available."
+          fi
 
       - name: Overwrite Pixel 7 repositories from GitHub
         shell: bash
