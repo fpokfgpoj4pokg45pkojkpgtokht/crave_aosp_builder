@@ -187,7 +187,7 @@ jobs:
           # tooling can otherwise try to satisfy "pantah" from LineageOS.
           mkdir -p .repo/local_manifests
           cat > .repo/local_manifests/lunaris_pantah.xml <<'EOF'
-<?xml version="1.0" encoding="UTF-8"?>
+"<?xml version="1.0" encoding="UTF-8"?>
 <manifest>
     <remote
         name="lunaris-pantah"
@@ -199,7 +199,7 @@ jobs:
         remote="lunaris-pantah"
         revision="main"
         clone-depth="1" />
-</manifest>
+</manifest>"
 EOF
 
           echo
