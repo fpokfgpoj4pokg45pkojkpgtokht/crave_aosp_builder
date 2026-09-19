@@ -1,0 +1,687 @@
+name: Lunaris-AOSP 16.2 - Pixel 7 Panther ROM
+
+on:
+  workflow_dispatch:
+    inputs:
+      DEVICE_NAME:
+        description: "Device codename"
+        required: true
+        default: "panther"
+        type: string
+
+      PRODUCT_NAME:
+        description: "Lunch target"
+        required: true
+        default: "lunaris_pantah-bp4a-userdebug"
+        type: string
+
+      BUILD_COMMAND:
+        description: "ROM build command"
+        required: true
+        default: "m bacon"
+        type: string
+
+      LUNARIS_BRANCH:
+        description: "Lunaris-AOSP branch"
+        required: true
+        default: "16.2"
+        type: string
+
+      CLEAN_BUILD:
+        description: "Delete out/ before building?"
+        required: true
+        default: "no"
+        type: choice
+        options:
+          - "no"
+          - "yes"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: lunaris-panther-build
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: Build Lunaris-AOSP 16.2 - Pixel 7 Panther ROM
+    runs-on: self-hosted
+    timeout-minutes: 99999
+
+    permissions:
+      contents: read
+
+    # Never allow Git/Git Credential Manager to stop the runner
+    # and ask for a GitHub username/password.
+    env:
+      GIT_TERMINAL_PROMPT: "0"
+      GCM_INTERACTIVE: "Never"
+      GIT_ASKPASS: "/bin/false"
+
+    steps:
+
+      # ============================================================
+      # CHECKOUT WORKFLOW
+      # ============================================================
+
+      - name: Checkout workflow repository
+        uses: actions/checkout@v4
+        with:
+          clean: false
+
+
+      # ============================================================
+      # RUNNER INFORMATION
+      # ============================================================
+
+      - name: Show runner information
+        shell: bash
+        run: |
+          set -e
+
+          echo "=============================================="
+          echo " Lunaris-AOSP ARM64 ROM BUILD"
+          echo "=============================================="
+
+          echo "Hostname: $(hostname)"
+          echo "User: $(whoami)"
+          echo "Architecture: $(uname -m)"
+          echo "CPU count: $(nproc --all)"
+
+          echo
+          echo "Memory:"
+          free -h
+
+          echo
+          echo "Disk:"
+          df -h
+
+          echo
+          echo "Working directory:"
+          pwd
+
+
+      # ============================================================
+      # VERIFY LUNARIS SOURCE TREE
+      # ============================================================
+
+      - name: Verify Lunaris source tree
+        shell: bash
+        run: |
+          set -e
+
+          echo "=============================================="
+          echo " VERIFYING LUNARIS SOURCE TREE"
+          echo "=============================================="
+
+          if [ ! -d ".repo" ]; then
+            echo "WARNING: .repo directory was not found."
+          else
+            echo ".repo directory found."
+          fi
+
+          if [ ! -f "build/envsetup.sh" ]; then
+            echo "ERROR: build/envsetup.sh was not found."
+            exit 1
+          fi
+
+          test -d build/make
+          test -d build/soong
+
+          echo "Lunaris source tree verified."
+
+
+      # ============================================================
+      # SYNC LUNARIS PANTAH DEVICE TREE
+      #
+      # This is the dedicated Lunaris Panther device repository:
+      #   https://github.com/aditya-ig10/lunaris-pantah
+      #
+      # Sync ONLY this device repository. Do not sync/clone the old
+      # Lunaris-AOSP Panther device repositories or a separate generic
+      # LineageOS Panther device tree.
+      # ============================================================
+
+      - name: Sync Lunaris Pantah device tree
+        shell: bash
+        run: |
+          set -e
+
+          export GIT_TERMINAL_PROMPT=0
+          export GCM_INTERACTIVE=Never
+          export GIT_ASKPASS=/bin/false
+
+          DEVICE_DIR="device/google/pantah"
+          REPO_URL="https://github.com/aditya-ig10/lunaris-pantah.git"
+          BRANCH="main"
+
+          echo "=============================================="
+          echo " SYNCING LUNARIS PANTAH DEVICE TREE"
+          echo "=============================================="
+
+          # The self-hosted runner can retain old Android source trees.
+          # NEVER reuse an existing device/google/pantah checkout because
+          # repo may have left a LineageOS tree there. Remove ONLY this
+          # device directory, then clone the requested Lunaris repository.
+          if [ -e "${DEVICE_DIR}" ]; then
+            echo "Removing existing ${DEVICE_DIR} checkout..."
+            rm -rf "${DEVICE_DIR}"
+          fi
+
+          mkdir -p "$(dirname "${DEVICE_DIR}")"
+
+          echo "Cloning ONLY the Lunaris Pantah repository..."
+          git clone \
+            --depth=1 \
+            --single-branch \
+            --branch "${BRANCH}" \
+            "${REPO_URL}" \
+            "${DEVICE_DIR}"
+
+          # Make the repository identity explicit.
+          git -C "${DEVICE_DIR}" remote set-url origin "${REPO_URL}"
+
+          # Register the Lunaris device tree in a local manifest. This is
+          # important on a self-hosted tree: Android's device-dependency
+          # tooling can otherwise try to satisfy "pantah" from LineageOS.
+          mkdir -p .repo/local_manifests
+          cat > .repo/local_manifests/lunaris_pantah.xml <<'EOF'
+<?xml version="1.0" encoding="UTF-8"?>
+<manifest>
+    <remote
+        name="lunaris-pantah"
+        fetch="https://github.com/"
+        revision="main" />
+    <project
+        name="aditya-ig10/lunaris-pantah"
+        path="device/google/pantah"
+        remote="lunaris-pantah"
+        revision="main"
+        clone-depth="1" />
+</manifest>
+EOF
+
+          echo
+          echo "Lunaris Pantah repository:"
+          git -C "${DEVICE_DIR}" remote get-url origin
+          git -C "${DEVICE_DIR}" rev-parse --short HEAD
+
+          echo
+          echo "Required Panther product files:"
+          test -f "${DEVICE_DIR}/AndroidProducts.mk"
+          test -f "${DEVICE_DIR}/lunaris_pantah.mk"
+          test -f "${DEVICE_DIR}/aosp_panther.mk"
+          test -f "${DEVICE_DIR}/device-panther.mk"
+
+          echo
+          echo "Lunaris Pantah device tree verified."
+
+
+      # ============================================================
+      # BUILD DEPENDENCIES
+      # ============================================================
+
+      - name: Install Android build dependencies
+        shell: bash
+        run: |
+          set -e
+
+          export DEBIAN_FRONTEND=noninteractive
+
+          REQUIRED_CMDS="
+            adb
+            bc
+            bison
+            gcc
+            g++
+            ccache
+            curl
+            flex
+            gperf
+            convert
+            git
+            git-lfs
+            gpg
+            lz4
+            lzop
+            python3
+            pip3
+            rsync
+            schedtool
+            mksquashfs
+            unzip
+            xsltproc
+            zip
+          "
+
+          MISSING=""
+
+          for cmd in ${REQUIRED_CMDS}; do
+            if ! command -v "${cmd}" >/dev/null 2>&1; then
+              MISSING="${MISSING} ${cmd}"
+            fi
+          done
+
+          if [ -z "${MISSING}" ]; then
+            echo "All required Android build tools are installed."
+          else
+            echo "Missing tools:${MISSING}"
+
+            if [ "$(id -u)" -ne 0 ]; then
+              if ! sudo -n true >/dev/null 2>&1; then
+                echo
+                echo "ERROR: Missing packages require sudo."
+                exit 1
+              fi
+            fi
+
+            sudo apt-get update
+
+            sudo apt-get install -y \
+              adb \
+              bc \
+              bison \
+              build-essential \
+              ccache \
+              curl \
+              flex \
+              g++ \
+              git \
+              git-lfs \
+              gnupg \
+              gperf \
+              imagemagick \
+              libelf-dev \
+              libncurses-dev \
+              libssl-dev \
+              libxml2-utils \
+              lz4 \
+              lzop \
+              python3 \
+              python3-pip \
+              python3-venv \
+              rsync \
+              schedtool \
+              squashfs-tools \
+              unzip \
+              xsltproc \
+              zip \
+              zlib1g-dev
+          fi
+
+          git lfs install --skip-repo
+
+          echo
+          echo "Build dependencies ready."
+
+
+      # ============================================================
+      # GIT CONFIGURATION
+      # ============================================================
+
+      - name: Configure Git
+        shell: bash
+        run: |
+          set -e
+
+          git config --global user.name "${GITHUB_ACTOR}"
+          git config --global user.email \
+            "${GITHUB_ACTOR_ID}+${GITHUB_ACTOR}@users.noreply.github.com"
+
+          git config --global protocol.version 2
+          git config --global fetch.parallel 8
+          git config --global lfs.concurrenttransfers 4
+
+          # Prevent existing Git credential helpers on the PC from
+          # launching an interactive GitHub login during the build.
+          git config --global --unset-all credential.helper 2>/dev/null || true
+          git config --global credential.interactive false
+
+          git lfs install --skip-repo
+
+          echo "Git credential prompts disabled."
+
+
+      # ============================================================
+      # VERIFY LUNARIS SOURCE VERSION
+      # ============================================================
+
+      - name: Check Lunaris and Panther source
+        shell: bash
+        env:
+          LUNARIS_BRANCH: ${{ inputs.LUNARIS_BRANCH }}
+        run: |
+          set -e
+
+          echo "=============================================="
+          echo " LUNARIS SOURCE CHECK"
+          echo "=============================================="
+
+          echo "Requested Lunaris branch: ${LUNARIS_BRANCH}"
+
+          echo
+          echo "Lunaris Pantah device tree:"
+          test -f device/google/pantah/AndroidProducts.mk
+          test -f device/google/pantah/lunaris_pantah.mk
+          test -f device/google/pantah/aosp_panther.mk
+          test -f device/google/pantah/device-panther.mk
+          echo "OK"
+
+          if [ -d ".repo/manifests" ]; then
+            echo
+            echo "Manifest directory:"
+            ls -la .repo/manifests || true
+          fi
+
+          echo
+          echo "Android build environment:"
+          test -f build/envsetup.sh
+
+          echo "OK"
+
+
+    
+
+      # ============================================================
+      # SETUP ANDROID BUILD ENVIRONMENT
+      # ============================================================
+
+      - name: Setup Android build environment
+        shell: bash
+        run: |
+          set -e
+          # This envsetup.sh runs its ccache setup (which uses a
+          # `cat /dev/urandom | tr ... | head -c N` pipeline to generate a
+          # random ID) as soon as it's sourced -- not later inside `lunch`.
+          # `head` exits as soon as it has enough bytes, closing the pipe
+          # early; `tr`/`cat` then get a harmless SIGPIPE. GitHub Actions
+          # runs bash steps with `pipefail` on by default, which would
+          # otherwise turn that harmless SIGPIPE into a hard step failure,
+          # so pipefail must already be off before the `source` line runs.
+          set +o pipefail
+
+          # Verify that the Lunaris device tree is still present immediately
+          # before envsetup/lunch. This prevents stale repo state from silently
+          # replacing it with LineageOS.
+          test -f device/google/pantah/AndroidProducts.mk
+          test -f device/google/pantah/lunaris_pantah.mk
+          test -f device/google/pantah/aosp_panther.mk
+          test -f device/google/pantah/device-panther.mk
+
+          if grep -Rqs "android_device_google_panther\|LineageOS"               device/google/pantah/AndroidProducts.mk               device/google/pantah/*.mk               device/google/pantah/panther/*.mk 2>/dev/null; then
+            echo "ERROR: LineageOS Panther references detected before lunch."
+            exit 1
+          fi
+
+          source build/envsetup.sh
+
+          if ! lunch "${{ inputs.PRODUCT_NAME }}"; then
+            set -o pipefail
+            echo
+            echo "=============================================="
+            echo " '${{ inputs.PRODUCT_NAME }}' is not a valid lunch combo."
+            echo " Modern lunch requires <product>-<release>-<variant>."
+            echo " Valid combos containing 'panther':"
+            echo "=============================================="
+            set +o pipefail
+            lunch 2>&1 | grep -i panther || echo "(no 'panther' combos found in the lunch menu)"
+            set -o pipefail
+            exit 1
+          fi
+          set -o pipefail
+
+      # ============================================================
+      # OPTIONAL CLEAN BUILD
+      # ============================================================
+
+      - name: Clean build output
+        if: ${{ inputs.CLEAN_BUILD == 'yes' }}
+        shell: bash
+        run: |
+          set -e
+
+          echo "=============================================="
+          echo " CLEANING BUILD OUTPUT"
+          echo "=============================================="
+
+          rm -rf out
+
+          echo "out/ removed."
+
+
+      # ============================================================
+      # BUILD ROM
+      # ============================================================
+
+      - name: Build ROM
+        shell: bash
+        timeout-minutes: 720
+        env:
+          PRODUCT_NAME: ${{ inputs.PRODUCT_NAME }}
+          BUILD_COMMAND: ${{ inputs.BUILD_COMMAND }}
+        run: |
+          set -e
+
+          echo "=============================================="
+          echo " BUILDING LUNARIS-AOSP ROM"
+          echo "=============================================="
+
+          echo "Device:  Pixel 7 / Panther"
+          echo "Product: ${PRODUCT_NAME}"
+          echo "Command: ${BUILD_COMMAND}"
+
+          export BUILD_USERNAME="${GITHUB_ACTOR}"
+          export BUILD_HOSTNAME="github-actions-arm64"
+
+          # See envsetup step above regarding pipefail.
+          set +o pipefail
+
+          source build/envsetup.sh
+
+          echo "Checking lunch target: ${PRODUCT_NAME}"
+          if ! lunch "${PRODUCT_NAME}"; then
+            set -o pipefail
+            echo
+            echo "ERROR: ${PRODUCT_NAME} could not be selected."
+            echo
+            echo "Available Panther/Pantah targets:"
+            set +o pipefail
+            lunch 2>&1 | grep -i "panther" || echo "(No Panther targets found.)"
+            set -o pipefail
+            exit 1
+          fi
+
+
+          if ! get_build_var TARGET_PRODUCT > /tmp/target_product.log 2>&1; then
+
+            set -o pipefail
+
+            echo
+            echo "ERROR: Product could not be resolved."
+
+            cat /tmp/target_product.log
+
+            echo
+            echo "Available Panther/Pantah targets:"
+            set +o pipefail
+            lunch 2>&1 |
+              grep -i "panther" ||
+              echo "(No Panther targets found.)"
+
+            set -o pipefail
+
+            exit 1
+          fi
+
+
+          TARGET_PRODUCT="$(cat /tmp/target_product.log)"
+
+          set -o pipefail
+
+          echo
+          echo "TARGET_PRODUCT=${TARGET_PRODUCT}"
+
+          echo
+          echo "Starting ROM build:"
+          echo "${BUILD_COMMAND}"
+
+          echo
+
+          bash -c "${BUILD_COMMAND}"
+
+
+          echo
+          echo "=============================================="
+          echo " BUILD COMMAND FINISHED"
+          echo "=============================================="
+
+
+      # ============================================================
+      # FIND ROM ZIP
+      # ============================================================
+
+      - name: Verify ROM ZIP
+        if: success()
+        shell: bash
+        env:
+          DEVICE_NAME: ${{ inputs.DEVICE_NAME }}
+        run: |
+          set -e
+
+          OUT_DIR="out/target/product/${DEVICE_NAME}"
+
+          echo "=============================================="
+          echo " VERIFYING ROM OUTPUT"
+          echo "=============================================="
+
+          echo "Output directory:"
+          echo "${OUT_DIR}"
+
+          if [ ! -d "${OUT_DIR}" ]; then
+            echo
+            echo "ERROR: ROM output directory does not exist."
+            exit 1
+          fi
+
+
+          echo
+          echo "Files produced:"
+          find "${OUT_DIR}" \
+            -maxdepth 1 \
+            -type f \
+            -printf '%f\n' |
+          sort
+
+
+          ROM_ZIP="$(
+            find "${OUT_DIR}" \
+              -maxdepth 1 \
+              -type f \
+              -iname "*.zip" \
+              ! -iname "*ota*testkey*" \
+              ! -iname "*target-files*" \
+              -printf '%p\n' |
+            sort |
+            head -n 1
+          )"
+
+
+          if [ -z "${ROM_ZIP}" ]; then
+            echo
+            echo "ERROR: No ROM ZIP was produced."
+            echo
+            echo "ZIP files found:"
+            find "${OUT_DIR}" \
+              -maxdepth 1 \
+              -type f \
+              -iname "*.zip" \
+              -print || true
+
+            exit 1
+          fi
+
+
+          ROM_NAME="$(basename "${ROM_ZIP}")"
+          ROM_SIZE="$(du -h "${ROM_ZIP}" | cut -f1)"
+
+
+          echo
+          echo "=============================================="
+          echo " ROM CREATED SUCCESSFULLY"
+          echo "=============================================="
+
+          echo "ROM:  ${ROM_NAME}"
+          echo "Size: ${ROM_SIZE}"
+          echo "Path: ${ROM_ZIP}"
+
+
+
+
+      # ============================================================
+      # UPLOAD ROM ZIP
+      # ============================================================
+
+      - name: Upload ROM ZIP
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: lunaris-aosp-16.2-${{ inputs.DEVICE_NAME }}-ROM
+          retention-days: 7
+          if-no-files-found: error
+          path: |
+            out/target/product/${{ inputs.DEVICE_NAME }}/*.zip
+
+
+      # ============================================================
+      # UPLOAD ROM IMAGES
+      # ============================================================
+
+      - name: Upload ROM images
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: lunaris-aosp-16.2-${{ inputs.DEVICE_NAME }}-images
+          retention-days: 7
+          if-no-files-found: warn
+          path: |
+            out/target/product/${{ inputs.DEVICE_NAME }}/*.img
+            out/target/product/${{ inputs.DEVICE_NAME }}/*boot*.img
+            out/target/product/${{ inputs.DEVICE_NAME }}/*vendor*.img
+
+
+      # ============================================================
+      # UPLOAD BUILD METADATA
+      # ============================================================
+
+      - name: Upload build metadata
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: lunaris-aosp-16.2-${{ inputs.DEVICE_NAME }}-metadata
+          retention-days: 7
+          if-no-files-found: warn
+          path: |
+            out/target/product/${{ inputs.DEVICE_NAME }}/*.json
+            out/target/product/${{ inputs.DEVICE_NAME }}/*.txt
+
+
+      # ============================================================
+      # FINAL DISK USAGE
+      # ============================================================
+
+      - name: Show final disk usage
+        if: always()
+        shell: bash
+        run: |
+          echo "=============================================="
+          echo " FINAL DISK USAGE"
+          echo "=============================================="
+
+          df -h
+
+          if [ -d "out" ]; then
+            echo
+            echo "Build output size:"
+            du -sh out 2>/dev/null || true
+          fi
