@@ -1,4 +1,3 @@
-
 name: Lunaris-AOSP 16.2 - GSI Build
 
 on:
@@ -150,19 +149,19 @@ jobs:
             if [ "$(id -u)" -ne 0 ]; then
               echo "Checking apt permissions..."
 
-              if ! apt-get update >/tmp/apt_probe.log 2>&1; then
+              if ! sudo -n apt-get update >/tmp/apt_probe.log 2>&1; then
                 echo
                 echo "ERROR: Missing packages require apt."
-                echo "The self-hosted runner does not have usable apt privileges."
+                echo "The self-hosted runner does not have usable sudo/apt privileges."
                 echo
                 cat /tmp/apt_probe.log
                 exit 1
               fi
             fi
 
-            apt-get update
+            sudo apt-get update
 
-            apt-get install -y \
+            sudo apt-get install -y \
               adb \
               bc \
               bison \
