@@ -1,4 +1,4 @@
-name: Lunaris-AOSP 16.2 - Pixel 7 (Panther) Build
+name: Lunaris-AOSP 16.2 - Pixel 7 (Panther) Builder
 
 on:
   workflow_dispatch:
@@ -286,20 +286,29 @@ jobs:
           set +o pipefail
           source build/envsetup.sh
 
-          if ! lunch "${{ inputs.PRODUCT_NAME }}"; then
+          # NOTE: `lunch` itself does not reliably return a non-zero exit
+          # code on an invalid combo (it just prints an error and keeps
+          # going), so `if ! lunch ...` cannot be trusted to catch this.
+          # `get_build_var` runs the same underlying dumpvars check Soong
+          # uses and DOES report failure correctly, so use that instead.
+          lunch "${{ inputs.PRODUCT_NAME }}" || true
+
+          if ! get_build_var TARGET_PRODUCT > /tmp/target_product.log 2>&1; then
             set -o pipefail
             echo
             echo "=============================================="
-            echo " '${{ inputs.PRODUCT_NAME }}' is not a valid lunch combo."
-            echo " Modern lunch requires <product>-<release>-<variant>."
-            echo " Valid combos containing 'panther':"
+            echo " '${{ inputs.PRODUCT_NAME }}' did not resolve to a valid product."
             echo "=============================================="
+            cat /tmp/target_product.log
+            echo
+            echo "Valid combos containing 'panther':"
             set +o pipefail
             lunch 2>&1 | grep -i panther || echo "(no 'panther' combos found in the lunch menu)"
             set -o pipefail
             exit 1
           fi
           set -o pipefail
+          echo "Resolved TARGET_PRODUCT: $(cat /tmp/target_product.log)"
 
       - name: Optional clean build
         if: ${{ inputs.CLEAN_BUILD == 'yes' }}
@@ -326,20 +335,24 @@ jobs:
           export BUILD_HOSTNAME="github-actions-arm64"
           set +o pipefail
           source build/envsetup.sh
+          lunch "${PRODUCT_NAME}" || true
 
-          if ! lunch "${PRODUCT_NAME}"; then
+          if ! get_build_var TARGET_PRODUCT > /tmp/target_product.log 2>&1; then
             set -o pipefail
             echo
             echo "=============================================="
-            echo " '${PRODUCT_NAME}' is not a valid lunch combo."
-            echo " Valid combos containing 'panther':"
+            echo " '${PRODUCT_NAME}' did not resolve to a valid product."
             echo "=============================================="
+            cat /tmp/target_product.log
+            echo
+            echo "Valid combos containing 'panther':"
             set +o pipefail
             lunch 2>&1 | grep -i panther || echo "(no 'panther' combos found in the lunch menu)"
             set -o pipefail
             exit 1
           fi
           set -o pipefail
+          echo "Resolved TARGET_PRODUCT: $(cat /tmp/target_product.log)"
           echo "Starting: ${BUILD_COMMAND}"
           bash -c "${BUILD_COMMAND}"
 
