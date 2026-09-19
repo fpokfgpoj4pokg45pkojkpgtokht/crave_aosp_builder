@@ -229,17 +229,6 @@ jobs:
             "https://github.com/Lunaris-AOSP/android_device_google_gs201.git" \
             "https://github.com/LineageOS/android_device_google_gs201.git"
 
-          clone_lunaris_or_lineage \
-            "vendor/google/panther" \
-            "https://github.com/Lunaris-AOSP/proprietary_vendor_google_panther.git" \
-            "https://github.com/TheMuppets/proprietary_vendor_google_panther.git"
-
-          # This exact Android Pantah prebuilt repository provides the required
-          # module list consumed by the gs201 BoardConfig.
-          replace_checkout \
-            "device/google/pantah-kernels/6.1" \
-            "https://android.googlesource.com/device/google/pantah-kernels/6.1" \
-            "android15-qpr2-release"
 
       - name: Select and expose Pantah kernel module list
         shell: bash
