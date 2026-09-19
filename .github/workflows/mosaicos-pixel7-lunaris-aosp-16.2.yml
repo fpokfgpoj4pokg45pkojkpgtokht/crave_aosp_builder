@@ -162,84 +162,7 @@ jobs:
             exit 1
           fi
 
-      - name: Overwrite Pixel 7 repositories from GitHub
-        shell: bash
-        timeout-minutes: 240
-        env:
-          LUNARIS_BRANCH: ${{ inputs.LUNARIS_BRANCH }}
-        run: |
-          set -euo pipefail
 
-          replace_checkout() {
-            local path="$1"
-            local url="$2"
-            local branch="$3"
-            local old_path="${path}.old-for-replacement"
-
-            echo "=============================================="
-            echo "Project path : ${path}"
-            echo "Remote URL   : ${url}"
-            echo "Branch       : ${branch}"
-            echo "=============================================="
-
-            rm -rf "${old_path}"
-            if [ -e "${path}" ]; then
-              mv "${path}" "${old_path}"
-            fi
-
-            mkdir -p "$(dirname "${path}")"
-            if ! git clone --depth=1 --branch "${branch}" "${url}" "${path}"; then
-              echo "Clone failed; restoring the previous directory."
-              rm -rf "${path}"
-              if [ -e "${old_path}" ]; then
-                mv "${old_path}" "${path}"
-              fi
-              exit 1
-            fi
-
-            rm -rf "${old_path}"
-            git -C "${path}" lfs pull || true
-            echo "Verified origin: $(git -C "${path}" remote get-url origin)"
-            echo "Checked-out commit: $(git -C "${path}" rev-parse --short HEAD)"
-          }
-
-          # Keep Pixel 7 device-specific projects on GitHub. Branch 16.2 is
-          # tried first for Lunaris forks; the fallback preserves compatibility
-          # with the upstream LineageOS Android 17 device branch.
-          clone_lunaris_or_lineage() {
-            local path="$1"
-            local lunaris_repo="$2"
-            local upstream_repo="$3"
-
-            if git ls-remote --exit-code --heads "${lunaris_repo}" "${LUNARIS_BRANCH}" >/dev/null 2>&1; then
-              replace_checkout "${path}" "${lunaris_repo}" "${LUNARIS_BRANCH}"
-            else
-              echo "No Lunaris branch ${LUNARIS_BRANCH} found for ${lunaris_repo}; using upstream lineage-24.0."
-              replace_checkout "${path}" "${upstream_repo}" "lineage-24.0"
-            fi
-          }
-
-          clone_lunaris_or_lineage \
-            "device/google/pantah" \
-            "https://github.com/Lunaris-AOSP/android_device_google_pantah.git" \
-            "https://github.com/LineageOS/android_device_google_pantah.git"
-
-          clone_lunaris_or_lineage \
-            "device/google/gs201" \
-            "https://github.com/Lunaris-AOSP/android_device_google_gs201.git" \
-            "https://github.com/LineageOS/android_device_google_gs201.git"
-
-          clone_lunaris_or_lineage \
-            "vendor/google/panther" \
-            "https://github.com/Lunaris-AOSP/proprietary_vendor_google_panther.git" \
-            "https://github.com/TheMuppets/proprietary_vendor_google_panther.git"
-
-          # This exact Android Pantah prebuilt repository provides the required
-          # module list consumed by the gs201 BoardConfig.
-          replace_checkout \
-            "device/google/pantah-kernels/6.1" \
-            "https://android.googlesource.com/device/google/pantah-kernels/6.1" \
-            "android15-qpr2-release"
 
       - name: Select and expose Pantah kernel module list
         shell: bash
@@ -276,7 +199,15 @@ jobs:
         run: |
           set -e
           source build/envsetup.sh
+          # `lunch` runs a ccache setup routine that generates a random
+          # string via a `cat /dev/urandom | tr ... | head -c N` pipeline.
+          # `head` exits as soon as it has enough bytes, closing the pipe
+          # early; `tr`/`cat` then get a harmless SIGPIPE. GitHub Actions
+          # runs bash steps with `pipefail` on by default, which would
+          # otherwise turn that harmless SIGPIPE into a hard step failure.
+          set +o pipefail
           lunch "${{ inputs.PRODUCT_NAME }}"
+          set -o pipefail
 
       - name: Optional clean build
         if: ${{ inputs.CLEAN_BUILD == 'yes' }}
@@ -302,7 +233,9 @@ jobs:
           export BUILD_USERNAME="${GITHUB_ACTOR}"
           export BUILD_HOSTNAME="github-actions-arm64"
           source build/envsetup.sh
+          set +o pipefail
           lunch "${PRODUCT_NAME}"
+          set -o pipefail
           echo "Starting: ${BUILD_COMMAND}"
           bash -c "${BUILD_COMMAND}"
 
